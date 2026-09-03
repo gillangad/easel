@@ -86,6 +86,7 @@ export type DesignNode = {
   id: string;
   type: NodeType;
   name: string;
+  isGroup?: boolean;
   pageId: string;
   parentId: string | null;
   childIds: string[];

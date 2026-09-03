@@ -76,6 +76,7 @@ import {
   getArtboardForNode,
   getArtboards,
   getBoundingRect,
+  getCanvasSelectionId,
   getDescendantIds,
   getPage,
   getPageNodeIds,
@@ -1173,10 +1174,10 @@ export default function App() {
   );
 }
 
-type IconButtonProps = { label: string; children: ReactNode; onClick?: () => void; disabled?: boolean; active?: boolean };
+type IconButtonProps = { label: string; children: ReactNode; onClick?: () => void; disabled?: boolean; active?: boolean; className?: string };
 
-function IconButton({ label, children, onClick, disabled, active }: IconButtonProps) {
-  return <button className={`icon-button ${active ? 'is-active' : ''}`} type="button" aria-label={label} title={label} onClick={onClick} disabled={disabled}>{children}</button>;
+function IconButton({ label, children, onClick, disabled, active, className }: IconButtonProps) {
+  return <button className={`icon-button ${active ? 'is-active' : ''} ${className ?? ''}`.trim()} type="button" aria-label={label} title={label} onClick={onClick} disabled={disabled}>{children}</button>;
 }
 
 type NodeRendererProps = {
@@ -1255,7 +1256,7 @@ function NodeRenderer({ id, document, tool, selectedIds, editingNodeId, pulseIds
       event.stopPropagation();
       return;
     }
-    onPointerDown(node.id, event);
+    onPointerDown(getCanvasSelectionId(document, node.id), event);
   };
 
   const children = node.childIds.map((childId) => <NodeRenderer key={childId} id={childId} document={document} tool={tool} selectedIds={selectedIds} editingNodeId={editingNodeId} pulseIds={pulseIds} workingIds={workingIds} focusIds={focusIds} preview={preview} onPointerDown={onPointerDown} onDoubleClick={onDoubleClick} onCommitText={onCommitText} onSelect={() => undefined} />);
@@ -1398,12 +1399,25 @@ type LeftPanelProps = {
 
 function LeftPanel({ width, resizeActive, resizeMin, resizeMax, onResizeStart, onResizeKeyDown, files, activeFileId, onSwitchFile, onNewFile, onRenameFile, theme, onTheme, document, designs, activeDesign, assets, selectedAssetId, onSelectAsset, onUploadAssets, onPasteAsset, selectedIds, workingIds, pulseIds, revealRequest, onSelect, onSelectDesign, onToggleHidden, onToggleLocked, onReorderLayer, onCollapse }: LeftPanelProps) {
   const initialExpanded = designs.flatMap((design) => getDescendantIds(document, design.id)).filter((id) => document.nodes[id]?.type === 'frame');
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set(initialExpanded));
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set([...designs.map((design) => design.id), ...initialExpanded]));
+  const knownDesignIdsRef = useRef(new Set(designs.map((design) => design.id)));
   const [panelTab, setPanelTab] = useState<'layers' | 'assets'>('layers');
   const [assetSearch, setAssetSearch] = useState('');
   const [draggedLayerId, setDraggedLayerId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<LayerDropTarget | null>(null);
   const layerTreeRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const currentDesignIds = new Set(designs.map((design) => design.id));
+    setExpandedIds((current) => {
+      const next = new Set(current);
+      designs.forEach((design) => {
+        if (!knownDesignIdsRef.current.has(design.id)) next.add(design.id);
+      });
+      return next;
+    });
+    knownDesignIdsRef.current = currentDesignIds;
+  }, [designs]);
 
   useEffect(() => {
     if (!revealRequest.ids.length) return;
@@ -1475,22 +1489,23 @@ function LeftPanel({ width, resizeActive, resizeMin, resizeMax, onResizeStart, o
 
   return <aside className="left-panel" style={{ width, minWidth: width }}>
     <div className="panel-heading">
-      <div className="sidebar-brand-row"><IconButton label="Hide Layers panel" onClick={onCollapse}><PanelLeftClose size={17} /></IconButton><button className="brand-mark" type="button" title="Easel" aria-label="Easel"><span className="brand-glyph" />Easel</button></div>
-      <label className="file-selector-field"><span className="panel-overline">Current File</span><select className="file-selector" aria-label="Current File" value={activeFileId} onChange={handleFileChange}>{files.map((file) => <option key={file.id} value={file.id}>{file.name}</option>)}<option value="__new_file__">New File</option><option value="__rename_file__">Rename current File</option></select></label>
+      <div className="sidebar-brand-row"><IconButton className="panel-collapse-button" label="Hide Layers panel" onClick={onCollapse}><PanelLeftClose size={17} /></IconButton><button className="brand-mark" type="button" title="Easel" aria-label="Easel"><span className="brand-glyph" />Easel</button></div>
+      <div className="file-selector-field"><select className="file-selector" aria-label="Current File" value={activeFileId} onChange={handleFileChange}>{files.map((file) => <option key={file.id} value={file.id}>{file.name}</option>)}<option value="__new_file__">New File</option><option value="__rename_file__">Rename current File</option></select></div>
     </div>
     <div className="panel-tabs" role="tablist" aria-label="Panel views"><button type="button" role="tab" aria-selected={panelTab === 'layers'} className={panelTab === 'layers' ? 'is-active' : ''} onClick={() => setPanelTab('layers')}><Layers3 size={14} />Layers</button><button type="button" role="tab" aria-selected={panelTab === 'assets'} className={panelTab === 'assets' ? 'is-active' : ''} onClick={() => setPanelTab('assets')}><ImageIcon size={14} />Assets<span className="tab-count">{assets.length}</span></button></div>
     {panelTab === 'layers' ? <>
       <section className="panel-section frames-section">
         <div className="section-heading"><span>Frames</span><span className="layer-count">{designs.length}</span></div>
         <div className="design-list">{designs.map((design) => <div key={design.id} className={`design-row frame-row ${activeDesign?.id === design.id ? 'is-active' : ''} ${selectedIds.includes(design.id) ? 'is-selected' : ''} ${workingIds.includes(design.id) ? 'is-agent-working' : ''} ${pulseIds.includes(design.id) ? 'is-agent-changed' : ''}`} data-frame-id={design.id}>
+          {design.childIds.length ? <button type="button" className="disclosure-button design-disclosure" aria-label={`${expandedIds.has(design.id) ? 'Collapse' : 'Expand'} ${design.name}`} aria-expanded={expandedIds.has(design.id)} onClick={(event) => { event.preventDefault(); event.stopPropagation(); setExpandedIds((current) => { const next = new Set(current); if (next.has(design.id)) next.delete(design.id); else next.add(design.id); return next; }); }}>{expandedIds.has(design.id) ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</button> : <span className="disclosure-spacer" />}
           <button type="button" className="design-main" onClick={() => onSelectDesign(design.id)}><span className="design-icon">{nodeIcon(design.type)}</span><span className="design-copy"><span className="design-name" title={design.name}>{design.name}</span><small>{Math.round(design.width)} × {Math.round(design.height)}</small></span></button>
-          <div className="row-actions"><button type="button" className="tiny-action" aria-label={`${design.hidden ? 'Show' : 'Hide'} ${design.name}`} title={design.hidden ? 'Show' : 'Hide'} onClick={() => onToggleHidden(design.id)}>{design.hidden ? <EyeOff size={14} /> : <Eye size={14} />}</button><button type="button" className={`tiny-action layer-lock ${design.locked ? 'is-locked' : ''}`} aria-label={`${design.locked ? 'Unlock' : 'Lock'} ${design.name}`} title={design.locked ? 'Unlock' : 'Lock'} onClick={() => onToggleLocked(design.id)}>{design.locked ? <Lock size={14} /> : <Unlock size={14} />}</button></div>
+          <div className="row-actions"><button type="button" className="tiny-action" aria-label={`${design.hidden ? 'Show' : 'Hide'} ${design.name}`} title={design.hidden ? 'Show' : 'Hide'} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onToggleHidden(design.id); }}>{design.hidden ? <EyeOff size={14} /> : <Eye size={14} />}</button><button type="button" className={`tiny-action layer-lock ${design.locked ? 'is-locked' : ''}`} aria-label={`${design.locked ? 'Unlock' : 'Lock'} ${design.name}`} title={design.locked ? 'Unlock' : 'Lock'} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onToggleLocked(design.id); }}>{design.locked ? <Lock size={14} /> : <Unlock size={14} />}</button></div>
         </div>)}</div>
       </section>
       <section className="panel-section layers-section">
         <div className="section-heading"><span>{activeDesign ? `Layers · ${activeDesign.name}` : 'Layers'}</span><button className="small-action collapse-layers-action" type="button" aria-label="Collapse all layers" title="Collapse all layers" onClick={() => setExpandedIds(new Set())}><ChevronDown size={14} /></button></div>
         <div className="layer-tree" ref={layerTreeRef}>
-          {activeDesign && designChildIds.slice().reverse().map((id) => <LayerTree key={id} id={id} document={document} selectedIds={selectedIds} workingIds={workingIds} pulseIds={pulseIds} depth={0} expandedIds={expandedIds} dropTarget={dropTarget} onSelect={onSelect} onToggleExpanded={(id) => setExpandedIds((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} onToggleHidden={onToggleHidden} onToggleLocked={onToggleLocked} onDragStart={handleDragStart} onDragOver={handleDragOver} onDrop={handleDrop} onDragEnd={handleDragEnd} />)}
+          {activeDesign && expandedIds.has(activeDesign.id) && designChildIds.slice().reverse().map((id) => <LayerTree key={id} id={id} document={document} selectedIds={selectedIds} workingIds={workingIds} pulseIds={pulseIds} depth={0} expandedIds={expandedIds} dropTarget={dropTarget} onSelect={onSelect} onToggleExpanded={(id) => setExpandedIds((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} onToggleHidden={onToggleHidden} onToggleLocked={onToggleLocked} onDragStart={handleDragStart} onDragOver={handleDragOver} onDrop={handleDrop} onDragEnd={handleDragEnd} />)}
           {looseRootIds.length > 0 && <div className="canvas-items-group"><div className="layer-group-label">Canvas items</div>{looseRootIds.slice().reverse().map((id) => <LayerTree key={id} id={id} document={document} selectedIds={selectedIds} workingIds={workingIds} pulseIds={pulseIds} depth={0} expandedIds={expandedIds} dropTarget={dropTarget} onSelect={onSelect} onToggleExpanded={(id) => setExpandedIds((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} onToggleHidden={onToggleHidden} onToggleLocked={onToggleLocked} onDragStart={handleDragStart} onDragOver={handleDragOver} onDrop={handleDrop} onDragEnd={handleDragEnd} />)}</div>}
           {!hasLayers && <div className="layers-empty"><Layers3 size={17} /><span>Nothing in this Frame yet.</span></div>}
         </div>
@@ -1531,10 +1546,10 @@ function LayerTree({ id, document, selectedIds, workingIds, pulseIds, depth, exp
   const effectivelyLocked = isEffectivelyLocked(document, node.id);
   const rowClasses = ['layer-row', selectedIds.includes(node.id) ? 'is-selected' : '', workingIds.includes(node.id) ? 'is-agent-working' : '', pulseIds.includes(node.id) ? 'is-agent-changed' : '', dropTarget?.id === node.id && dropTarget.before ? 'is-drop-before' : '', dropTarget?.id === node.id && !dropTarget.before ? 'is-drop-after' : ''].filter(Boolean).join(' ');
   return <div className="layer-tree-node"><div className={rowClasses} style={{ paddingLeft: 10 + depth * 14 }} data-layer-row-id={node.id} draggable={!effectivelyLocked} onDragStart={(event) => onDragStart(node.id, event)} onDragOver={(event) => onDragOver(node.id, event)} onDrop={(event) => onDrop(node.id, event)} onDragEnd={onDragEnd}>
-    {node.childIds.length ? <button type="button" className="disclosure-button" aria-label={`${open ? 'Collapse' : 'Expand'} ${node.name}`} onClick={() => onToggleExpanded(node.id)}>{open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</button> : <span className="disclosure-spacer" />}
+    {node.childIds.length ? <button type="button" className="disclosure-button" aria-label={`${open ? 'Collapse' : 'Expand'} ${node.name}`} aria-expanded={open} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onToggleExpanded(node.id); }}>{open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</button> : <span className="disclosure-spacer" />}
     <button className="layer-main" type="button" onClick={(event) => onSelect(node.id, event.shiftKey)}><span className="layer-icon">{nodeIcon(node.type)}</span><span className="layer-name" title={node.name}>{node.name}</span></button>
-    <button type="button" className="layer-visibility" aria-label={`${node.hidden ? 'Show' : 'Hide'} ${node.name}`} title={node.hidden ? 'Show' : 'Hide'} onClick={() => onToggleHidden(node.id)}>{node.hidden ? <EyeOff size={14} /> : <Eye size={14} />}</button>
-    <button type="button" className={`layer-lock ${node.locked ? 'is-locked' : ''}`} aria-label={`${node.locked ? 'Unlock' : 'Lock'} ${node.name}`} title={node.locked ? 'Unlock' : 'Lock'} onClick={() => onToggleLocked(node.id)}>{node.locked ? <Lock size={14} /> : <Unlock size={14} />}</button>
+    <button type="button" className="layer-visibility" aria-label={`${node.hidden ? 'Show' : 'Hide'} ${node.name}`} title={node.hidden ? 'Show' : 'Hide'} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onToggleHidden(node.id); }}>{node.hidden ? <EyeOff size={14} /> : <Eye size={14} />}</button>
+    <button type="button" className={`layer-lock ${node.locked ? 'is-locked' : ''}`} aria-label={`${node.locked ? 'Unlock' : 'Lock'} ${node.name}`} title={node.locked ? 'Unlock' : 'Lock'} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onToggleLocked(node.id); }}>{node.locked ? <Lock size={14} /> : <Unlock size={14} />}</button>
   </div>{open && node.childIds.slice().reverse().map((childId) => <LayerTree key={childId} id={childId} document={document} selectedIds={selectedIds} workingIds={workingIds} pulseIds={pulseIds} depth={depth + 1} expandedIds={expandedIds} dropTarget={dropTarget} onSelect={onSelect} onToggleExpanded={onToggleExpanded} onToggleHidden={onToggleHidden} onToggleLocked={onToggleLocked} onDragStart={onDragStart} onDragOver={onDragOver} onDrop={onDrop} onDragEnd={onDragEnd} />)}</div>;
 }
 

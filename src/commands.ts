@@ -1094,7 +1094,7 @@ function groupMutation(document: DocumentModel, ids: string[]): MutationOutcome 
   const bounds = getBoundingRect(document, shared.nodes.map((node) => node.id));
   if (!bounds) throw new CommandError('INVALID_SELECTION', 'Could not measure the selected elements.');
   const pageId = shared.nodes[0].pageId;
-  const frame = makeNode({ id: createId('frame'), type: 'frame', name: 'Group', pageId, parentId: shared.parentId, x: bounds.x - (parent ? getAbsolutePosition(document, parent.id).x : 0), y: bounds.y - (parent ? getAbsolutePosition(document, parent.id).y : 0), width: bounds.width, height: bounds.height, layout: { ...defaultLayout(), mode: 'free' }, style: { fill: 'transparent' } });
+  const frame = makeNode({ id: createId('frame'), type: 'frame', name: 'Group', isGroup: true, pageId, parentId: shared.parentId, x: bounds.x - (parent ? getAbsolutePosition(document, parent.id).x : 0), y: bounds.y - (parent ? getAbsolutePosition(document, parent.id).y : 0), width: bounds.width, height: bounds.height, layout: { ...defaultLayout(), mode: 'free' }, style: { fill: 'transparent' } });
   document.nodes[frame.id] = frame;
   const siblings = shared.parentId ? document.nodes[shared.parentId]?.childIds : getPage(document, pageId)?.rootIds;
   if (!siblings) throw new CommandError('INVALID_HIERARCHY', 'Could not find the selected sibling list.');

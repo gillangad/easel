@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { dispatchCommand, tryDispatchCommand, validateDocumentModel } from '../src/commands';
-import { createInitialState } from '../src/model';
+import { createInitialState, getCanvasSelectionId } from '../src/model';
 
 describe('Easel commands', () => {
   it('creates Frames, inserts a hierarchy, and keeps undo/redo transactional', () => {
@@ -62,6 +62,27 @@ describe('Easel commands', () => {
     expect(deleted.error).toBeUndefined();
     expect(deleted.state.document.nodes.site_kicker).toBeUndefined();
     expect(deleted.state.document.nodes.site_title).toBeUndefined();
+  });
+
+  it('keeps canvas group selection logical while visibility stays scoped to one layer', () => {
+    const initial = createInitialState();
+    const grouped = dispatchCommand(initial, { type: 'group-elements', ids: ['site_kicker', 'site_title'], source: 'human' });
+    const group = grouped.document.selection.primaryId as string;
+
+    expect(grouped.document.nodes[group].isGroup).toBe(true);
+    expect(getCanvasSelectionId(grouped.document, 'site_title')).toBe(group);
+    expect(getCanvasSelectionId(grouped.document, group)).toBe(group);
+
+    const websiteHidden = dispatchCommand(grouped, { type: 'toggle-hidden', ids: ['artboard_website'], hidden: true, source: 'human' });
+    expect(websiteHidden.document.nodes.artboard_website.hidden).toBe(true);
+    expect(websiteHidden.document.nodes.artboard_graphic.hidden).toBe(false);
+    expect(websiteHidden.document.nodes.graphic_title.hidden).toBe(false);
+
+    const websiteVisible = dispatchCommand(websiteHidden, { type: 'toggle-hidden', ids: ['artboard_website'], hidden: false, source: 'human' });
+    const childHidden = dispatchCommand(websiteVisible, { type: 'toggle-hidden', ids: ['site_title'], hidden: true, source: 'human' });
+    expect(websiteVisible.document.nodes.artboard_website.hidden).toBe(false);
+    expect(childHidden.document.nodes.artboard_website.hidden).toBe(false);
+    expect(childHidden.document.nodes.site_title.hidden).toBe(true);
   });
 
   it('reorders a Layer within its existing sibling list and respects locks', () => {

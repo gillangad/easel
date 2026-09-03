@@ -187,6 +187,7 @@ export function defaultLayout(): LayoutStyle {
 }
 
 type MakeNodeInput = Pick<DesignNode, 'id' | 'type' | 'name' | 'pageId' | 'parentId' | 'x' | 'y' | 'width' | 'height'> & {
+  isGroup?: boolean;
   childIds?: string[];
   style?: Partial<NodeStyle>;
   layout?: Partial<LayoutStyle>;
@@ -204,6 +205,7 @@ export function makeNode(input: MakeNodeInput): DesignNode {
     id: input.id,
     type: input.type,
     name: input.name,
+    ...(input.isGroup ? { isGroup: true } : {}),
     pageId: input.pageId,
     parentId: input.parentId,
     childIds: input.childIds ? [...input.childIds] : [],
@@ -430,6 +432,22 @@ export function isDescendant(document: DocumentModel, nodeId: string, ancestorId
     current = document.nodes[current.parentId];
   }
   return false;
+}
+
+/**
+ * Canvas clicks target the nearest top-level logical group. Layer-panel clicks
+ * deliberately bypass this helper so children remain independently editable.
+ */
+export function getCanvasSelectionId(document: DocumentModel, nodeId: string): string {
+  let current = document.nodes[nodeId];
+  let selectionId = nodeId;
+  while (current?.parentId) {
+    const parent = document.nodes[current.parentId];
+    if (!parent) break;
+    if (parent.type === 'frame' && (parent.isGroup || parent.name === 'Group')) selectionId = parent.id;
+    current = parent;
+  }
+  return selectionId;
 }
 
 function alignedOffset(parent: DesignNode, child: DesignNode, axisSize: number): number {

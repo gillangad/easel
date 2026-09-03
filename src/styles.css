@@ -403,11 +403,13 @@ body { min-width: 0; }
 }
 
 /* Final shell pass: the sidebar owns file and workspace controls. */
-.panel-heading { min-height: 108px; flex-direction: column; align-items: stretch; justify-content: center; gap: 10px; padding: 10px 13px 12px 8px; }
+.panel-heading { min-height: 84px; flex-direction: column; align-items: stretch; justify-content: center; gap: 6px; padding: 8px 13px 9px 8px; }
 .sidebar-brand-row { display: flex; align-items: center; gap: 3px; min-height: 34px; }
 .sidebar-brand-row .icon-button { flex: 0 0 34px; }
 .sidebar-brand-row .brand-mark { flex: 1; }
-.file-selector-field { min-width: 0; display: flex; flex-direction: column; gap: 4px; padding-left: 34px; }
+.panel-collapse-button { position: absolute; top: 10px; right: -18px; z-index: 40; border: 1px solid var(--color-border); background: var(--color-surface-raised); box-shadow: 0 6px 20px rgba(0,0,0,.08); }
+.panel-collapse-button:hover { background: var(--color-surface-hover); }
+.file-selector-field { width: 100%; min-width: 0; display: block; padding-left: 0; }
 .file-selector { width: 100%; min-height: 31px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface-raised); color: var(--color-text-primary); padding: 5px 8px; outline: none; font-size: 12px; }
 .file-selector:focus { border-color: var(--color-active); }
 .file-selector option { background: var(--color-surface-raised); color: var(--color-text-primary); }
