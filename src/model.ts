@@ -16,7 +16,6 @@ import {
   type SemanticTarget,
   type Viewport,
 } from './types';
-import { STARTER_READING_ASSET_ID, STARTER_READING_DATA_URL } from './starterAssets';
 
 export const MAX_HISTORY = 100;
 
@@ -282,34 +281,6 @@ function seedFrame(
   return makeNode({ id, type: 'frame', name, pageId, parentId, x, y, width, height, style, layout });
 }
 
-function seedImage(
-  id: string,
-  pageId: string,
-  parentId: string,
-  name: string,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  assetId: string,
-  binding?: DesignNode['binding'],
-): DesignNode {
-  return makeNode({
-    id,
-    type: 'image',
-    name,
-    pageId,
-    parentId,
-    x,
-    y,
-    width,
-    height,
-    style: { borderRadius: 18, borderWidth: 0 },
-    image: { assetId, originalName: 'book-club-reading.svg', naturalWidth: 720, naturalHeight: 520, aspectRatio: 720 / 520, role: 'content', label: name, alt: 'A quiet stack of books beside a reading lamp', palette: ['#ece5d9', '#5d7381', '#c98968', '#7d8b67'] },
-    binding,
-  });
-}
-
 export function createInitialDocument(): DocumentModel {
   const pageId = 'page_canvas';
   const websiteId = 'artboard_website';
@@ -328,18 +299,6 @@ export function createInitialDocument(): DocumentModel {
     updatedAt: nowIso(),
   };
 
-  document.assets[STARTER_READING_ASSET_ID] = {
-    id: STARTER_READING_ASSET_ID,
-    dataUrl: STARTER_READING_DATA_URL,
-    originalName: 'book-club-reading.svg',
-    naturalWidth: 720,
-    naturalHeight: 520,
-    aspectRatio: 720 / 520,
-    palette: ['#ece5d9', '#5d7381', '#c98968', '#7d8b67'],
-    sourceLabel: 'Starter',
-    createdAt: nowIso(),
-  };
-
   addNode(document, makeNode({
     id: websiteId,
     type: 'artboard',
@@ -350,21 +309,21 @@ export function createInitialDocument(): DocumentModel {
     y: 100,
     width: 880,
     height: 600,
-    style: { fill: '#fbfaf7' },
+    style: { fill: '#3b251c', borderColor: '#674536', borderWidth: 1 },
   }));
-  addNode(document, seedFrame('site_header', pageId, websiteId, 'Website header', 42, 30, 796, 34, { borderColor: '#e8e5df', borderWidth: 0 }));
-  addNode(document, seedText('site_wordmark', pageId, 'site_header', 'Website wordmark', 'THE READING ROOM', 0, 7, 220, 20, { fontSize: 11, fontWeight: 600, letterSpacing: 1.6, color: '#6e5038' }));
-  addNode(document, seedText('site_header_note', pageId, 'site_header', 'Website header note', 'A small gathering for curious readers', 490, 7, 306, 20, { fontSize: 11, fontWeight: 500, color: '#6b6b6b', textAlign: 'right' }));
-  addNode(document, seedText('site_kicker', pageId, websiteId, 'Website kicker', 'ONE EVENING · ONE GOOD BOOK', 54, 94, 330, 20, { fontSize: 11, fontWeight: 600, letterSpacing: 1.5, color: '#8b5e3c' }));
-  addNode(document, seedText('site_title', pageId, websiteId, 'Website title', 'After Hours Book Club', 50, 128, 470, 142, { fontSize: 54, fontWeight: 600, lineHeight: 1.02, letterSpacing: -1.8 }, { key: 'event.title', sourceLabel: 'Book Club brief', lastUpdatedAt: nowIso(), sharedValue: 'After Hours Book Club' }));
-  addNode(document, seedText('site_tagline', pageId, websiteId, 'Website tagline', 'Good books. Better conversations.', 54, 298, 420, 36, { fontSize: 19, fontWeight: 400, lineHeight: 1.3, color: '#5f5c57' }, { key: 'event.tagline', sourceLabel: 'Book Club brief', lastUpdatedAt: nowIso(), sharedValue: 'Good books. Better conversations.' }));
-  addNode(document, seedText('site_date', pageId, websiteId, 'Website date', 'September 18 · 7:00 PM', 54, 374, 330, 30, { fontSize: 16, fontWeight: 600 }, { key: 'event.date', sourceLabel: 'Book Club brief', lastUpdatedAt: nowIso(), sharedValue: 'September 18 · 7:00 PM' }));
-  addNode(document, seedText('site_location', pageId, websiteId, 'Website location', 'The Reading Room', 54, 410, 330, 26, { fontSize: 14, fontWeight: 500, color: '#6b6b6b' }, { key: 'event.location', sourceLabel: 'Book Club brief', lastUpdatedAt: nowIso(), sharedValue: 'The Reading Room' }));
-  addNode(document, seedRectangle('site_cta', pageId, websiteId, 'Website action', 54, 474, 222, 50, { fill: '#171717', borderRadius: 25 }));
-  addNode(document, seedText('site_cta_label', pageId, 'site_cta', 'Website action label', 'Join the next gathering', 18, 15, 186, 22, { color: '#ffffff', fontSize: 13, fontWeight: 600, textAlign: 'center' }));
-  addNode(document, seedImage('site_image', pageId, websiteId, 'Website hero image', 570, 100, 254, 350, STARTER_READING_ASSET_ID, { key: 'event.image', sourceLabel: 'Starter', lastUpdatedAt: nowIso(), sharedValue: STARTER_READING_ASSET_ID }));
-  addNode(document, seedFrame('site_meta', pageId, websiteId, 'Website details', 570, 474, 254, 70, { fill: '#efede8', borderRadius: 16 }, { clipContent: true }));
-  addNode(document, seedText('site_meta_label', pageId, 'site_meta', 'Website details label', 'THE READING ROOM · SEPTEMBER', 16, 24, 222, 20, { fontSize: 10, fontWeight: 600, letterSpacing: 1.1, color: '#8b5e3c' }));
+  addNode(document, seedRectangle('website_background', pageId, websiteId, 'Website Background', 0, 0, 880, 600, { fill: '#3b251c', borderColor: '#3b251c', borderWidth: 0, borderRadius: 0 }));
+  addNode(document, seedFrame('site_header', pageId, websiteId, 'Website header', 42, 30, 796, 34, { borderColor: '#6e4b3a', borderWidth: 0 }));
+  addNode(document, seedText('site_wordmark', pageId, 'site_header', 'Website wordmark', 'THE READING ROOM', 0, 7, 220, 20, { fontSize: 11, fontWeight: 600, letterSpacing: 1.6, color: '#d6b59a' }));
+  addNode(document, seedText('site_header_note', pageId, 'site_header', 'Website header note', 'A small gathering for curious readers', 490, 7, 306, 20, { fontSize: 11, fontWeight: 500, color: '#ad8e7a', textAlign: 'right' }));
+  addNode(document, seedText('site_kicker', pageId, websiteId, 'Website kicker', 'AFTER HOURS · BOOK CLUB', 54, 94, 330, 20, { fontSize: 11, fontWeight: 600, letterSpacing: 1.5, color: '#c28e69' }));
+  addNode(document, seedText('site_title', pageId, websiteId, 'Website Title', 'After Hours Book Club', 50, 128, 470, 142, { fontSize: 54, fontWeight: 600, lineHeight: 1.02, letterSpacing: -1.8, color: '#f6e9dc' }));
+  addNode(document, seedText('site_date', pageId, websiteId, 'Website Date', 'TBA', 54, 360, 150, 30, { fontSize: 16, fontWeight: 600, color: '#f3ddca' }, { key: 'event.date', sourceLabel: 'Book Club brief', lastUpdatedAt: nowIso(), sharedValue: 'TBA' }));
+  addNode(document, seedText('site_time', pageId, websiteId, 'Website Time', 'TBA', 238, 360, 150, 30, { fontSize: 16, fontWeight: 600, color: '#f3ddca' }, { key: 'event.time', sourceLabel: 'Book Club brief', lastUpdatedAt: nowIso(), sharedValue: 'TBA' }));
+  addNode(document, seedText('site_location', pageId, websiteId, 'Website Venue', 'TBA', 54, 410, 330, 26, { fontSize: 14, fontWeight: 500, color: '#d6b59a' }, { key: 'event.venue', sourceLabel: 'Book Club brief', lastUpdatedAt: nowIso(), sharedValue: 'TBA' }));
+  addNode(document, seedRectangle('site_accent', pageId, websiteId, 'Website accent', 570, 100, 254, 350, { fill: '#4c3024', borderColor: '#704b39', borderWidth: 1, borderRadius: 18 }));
+  addNode(document, seedText('site_accent_label', pageId, 'site_accent', 'Website accent label', 'A NIGHT FOR READERS', 28, 162, 198, 28, { fontSize: 12, fontWeight: 600, letterSpacing: 1.5, color: '#d6b59a', textAlign: 'center' }));
+  addNode(document, seedFrame('site_meta', pageId, websiteId, 'Website details', 570, 474, 254, 70, { fill: '#4c3024', borderColor: '#704b39', borderWidth: 1, borderRadius: 16 }, { clipContent: true }));
+  addNode(document, seedText('site_meta_label', pageId, 'site_meta', 'Website details label', 'DETAILS TO FOLLOW', 16, 24, 222, 20, { fontSize: 10, fontWeight: 600, letterSpacing: 1.1, color: '#c28e69', textAlign: 'center' }));
 
   addNode(document, makeNode({
     id: graphicId,
@@ -376,16 +335,17 @@ export function createInitialDocument(): DocumentModel {
     y: 100,
     width: 480,
     height: 600,
-    style: { fill: '#e7e1d6' },
+    style: { fill: '#3b251c', borderColor: '#674536', borderWidth: 1 },
   }));
-  addNode(document, seedText('graphic_kicker', pageId, graphicId, 'Graphic kicker', 'AFTER HOURS', 32, 34, 260, 24, { fontSize: 12, fontWeight: 600, letterSpacing: 1.8, color: '#6e5038' }));
-  addNode(document, seedText('graphic_title', pageId, graphicId, 'Graphic title', 'After Hours Book Club', 32, 92, 400, 120, { fontSize: 42, fontWeight: 600, lineHeight: 1.02, letterSpacing: -1.3 }, { key: 'event.title', sourceLabel: 'Book Club brief', lastUpdatedAt: nowIso(), sharedValue: 'After Hours Book Club' }));
-  addNode(document, seedText('graphic_tagline', pageId, graphicId, 'Graphic tagline', 'Good books. Better conversations.', 34, 236, 380, 36, { fontSize: 15, fontWeight: 400, color: '#5f5c57' }, { key: 'event.tagline', sourceLabel: 'Book Club brief', lastUpdatedAt: nowIso(), sharedValue: 'Good books. Better conversations.' }));
-  addNode(document, seedImage('graphic_image', pageId, graphicId, 'Graphic image', 32, 318, 416, 194, STARTER_READING_ASSET_ID, { key: 'event.image', sourceLabel: 'Starter', lastUpdatedAt: nowIso(), sharedValue: STARTER_READING_ASSET_ID }));
-  addNode(document, seedText('graphic_date', pageId, graphicId, 'Graphic date', 'September 18 · 7:00 PM', 34, 536, 260, 24, { fontSize: 13, fontWeight: 600 }, { key: 'event.date', sourceLabel: 'Book Club brief', lastUpdatedAt: nowIso(), sharedValue: 'September 18 · 7:00 PM' }));
-  addNode(document, seedText('graphic_location', pageId, graphicId, 'Graphic location', 'The Reading Room', 34, 564, 260, 20, { fontSize: 12, fontWeight: 500, color: '#6e5038' }, { key: 'event.location', sourceLabel: 'Book Club brief', lastUpdatedAt: nowIso(), sharedValue: 'The Reading Room' }));
-  addNode(document, seedRectangle('graphic_action', pageId, graphicId, 'Graphic action', 280, 536, 168, 48, { fill: '#171717', borderRadius: 24 }));
-  addNode(document, seedText('graphic_action_label', pageId, 'graphic_action', 'Graphic action label', 'Join the next gathering', 12, 14, 144, 20, { color: '#ffffff', fontSize: 11, fontWeight: 600, textAlign: 'center' }));
+  addNode(document, seedRectangle('graphic_background', pageId, graphicId, 'Graphic Background', 0, 0, 480, 600, { fill: '#3b251c', borderColor: '#3b251c', borderWidth: 0, borderRadius: 0 }));
+  addNode(document, seedText('graphic_kicker', pageId, graphicId, 'Graphic kicker', 'AFTER HOURS', 32, 34, 260, 24, { fontSize: 12, fontWeight: 600, letterSpacing: 1.8, color: '#c28e69' }));
+  addNode(document, seedText('graphic_title', pageId, graphicId, 'Graphic Subtitle', 'Quiet books. Good company.', 32, 92, 400, 120, { fontSize: 42, fontWeight: 600, lineHeight: 1.02, letterSpacing: -1.3, color: '#f6e9dc' }));
+  addNode(document, seedText('graphic_tagline', pageId, graphicId, 'Graphic Secondary Line', 'Bring a friend.', 34, 236, 380, 36, { fontSize: 15, fontWeight: 400, color: '#d6b59a' }));
+  addNode(document, seedRectangle('graphic_image', pageId, graphicId, 'Graphic Image Area', 32, 318, 416, 194, { fill: '#513326', borderColor: '#a06e52', borderWidth: 1, borderStyle: 'dashed', borderRadius: 18 }));
+  addNode(document, seedText('graphic_image_hint', pageId, 'graphic_image', 'Graphic placeholder hint', 'IMAGE AREA', 122, 84, 172, 24, { fontSize: 11, fontWeight: 600, letterSpacing: 1.5, color: '#cda98f', textAlign: 'center' }));
+  addNode(document, seedText('graphic_date', pageId, graphicId, 'Graphic Date', 'TBA', 34, 548, 108, 24, { fontSize: 12, fontWeight: 600, color: '#f3ddca' }, { key: 'event.date', sourceLabel: 'Book Club brief', lastUpdatedAt: nowIso(), sharedValue: 'TBA' }));
+  addNode(document, seedText('graphic_time', pageId, graphicId, 'Graphic Time', 'TBA', 158, 548, 108, 24, { fontSize: 12, fontWeight: 600, color: '#f3ddca' }, { key: 'event.time', sourceLabel: 'Book Club brief', lastUpdatedAt: nowIso(), sharedValue: 'TBA' }));
+  addNode(document, seedText('graphic_location', pageId, graphicId, 'Graphic Venue', 'TBA', 282, 548, 164, 24, { fontSize: 12, fontWeight: 500, color: '#d6b59a' }, { key: 'event.venue', sourceLabel: 'Book Club brief', lastUpdatedAt: nowIso(), sharedValue: 'TBA' }));
 
   document.selection = { ids: [websiteId], primaryId: websiteId };
   return document;

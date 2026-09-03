@@ -48,7 +48,7 @@ describe('Site Tool bridge', () => {
   it('resolves an exact semantic target and returns actual changed values', async () => {
     const harness = makeHarness();
     const result = await harness.bridge.invoke('update_elements', {
-      updates: [{ target: { frameName: 'Website', name: 'Website title', type: 'text' }, content: 'A new\nheadline', style: { fontSize: 64 } }],
+      updates: [{ target: { frameName: 'Website', name: 'Website Title', type: 'text' }, content: 'A new\nheadline', style: { fontSize: 64 } }],
     });
     expect(result.ok).toBe(true);
     expect(result.changedIds).toEqual(['site_title']);
@@ -82,7 +82,7 @@ describe('Site Tool bridge', () => {
     expect(ambiguous.error?.code).toBe('AMBIGUOUS_TARGET');
     expect(ambiguous.error?.details).toEqual(expect.objectContaining({ matchCount: 2, candidates: expect.any(Array) }));
     expect(harness.getState().document.nodes.site_title.content).toContain('After Hours');
-    expect(harness.getState().document.nodes.graphic_title.content).toContain('After Hours');
+    expect(harness.getState().document.nodes.graphic_title.content).toContain('Quiet books');
 
     const missing = await harness.bridge.invoke('update_elements', { updates: [{ target: { frameName: 'Website', name: 'Missing Layer', type: 'text' }, content: 'No match' }] });
     expect(missing.ok).toBe(false);
@@ -132,12 +132,12 @@ describe('Site Tool bridge', () => {
 
   it('bridges agent feedback lifecycle and target reveal IDs around mutations', async () => {
     const harness = makeHarness(createInitialState(), true);
-    const result = await harness.bridge.invoke('update_elements', { updates: [{ target: { frameName: 'Website', bindingKey: 'event.title', type: 'text' }, content: 'Updated by agent' }] });
+    const result = await harness.bridge.invoke('update_elements', { updates: [{ target: { frameName: 'Website', bindingKey: 'event.date', type: 'text' }, content: 'Updated by agent' }] });
     expect(result.ok).toBe(true);
-    expect(harness.starts[0]).toEqual(expect.arrayContaining(['site_title', 'artboard_website']));
+    expect(harness.starts[0]).toEqual(expect.arrayContaining(['site_date', 'artboard_website']));
     expect(harness.completions).toHaveLength(1);
     expect(harness.completions[0]).toEqual(expect.objectContaining({ success: true, mutation: true }));
-    expect(harness.completions[0].ids).toEqual(expect.arrayContaining(['site_title', 'artboard_website']));
+    expect(harness.completions[0].ids).toEqual(expect.arrayContaining(['site_date', 'artboard_website']));
   });
 
   it('creates Frames, inspects starter Assets, and places an imported Asset', async () => {
@@ -148,9 +148,9 @@ describe('Site Tool bridge', () => {
     expect(created.frame).toEqual(expect.objectContaining({ id: expect.any(String), name: 'Poster' }));
     expect(harness.getState().lastAction?.source).toBe('agent');
 
-    const assets = await harness.bridge.invoke('inspect_assets', { source: 'Starter' });
+    const assets = await harness.bridge.invoke('inspect_assets', { source: 'Drive' });
     expect(assets.ok).toBe(true);
-    expect(assets.assets).toEqual([expect.objectContaining({ assetId: 'asset_book_club_reading', source: 'Starter', type: 'image' })]);
+    expect(assets.assets).toEqual([]);
 
     const svg = 'data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%22720%22%20height=%22360%22%3E%3Crect%20width=%22720%22%20height=%22360%22%20fill=%22%23000%22/%3E%3C/svg%3E';
     const placed = await harness.bridge.invoke('import_and_place_asset', { data: svg, filename: 'import.svg', mimeType: 'image/svg+xml', target: { frameName: 'Website' }, position: { x: 30, y: 40 }, width: 200 });
@@ -182,11 +182,12 @@ describe('Site Tool bridge', () => {
 
   it('applies bindings, validates, exports, and returns recoverable input errors', async () => {
     const harness = makeHarness();
-    const bound = await harness.bridge.invoke('bind_context_fields', { bindings: [{ target: { frameName: 'Website', name: 'Website location', type: 'text' }, key: 'event.venue' }] });
+    const bound = await harness.bridge.invoke('bind_context_fields', { bindings: [{ target: { frameName: 'Website', name: 'Website Venue', type: 'text' }, key: 'event.venue' }] });
     expect(bound.ok).toBe(true);
-    const applied = await harness.bridge.invoke('apply_context_values', { values: [{ key: 'event.venue', value: 'The Annex' }] });
+    const applied = await harness.bridge.invoke('apply_context_values', { values: [{ key: 'event.date', value: '18 September' }, { key: 'event.time', value: '7:00 PM' }, { key: 'event.venue', value: 'The Annex' }] });
     expect(applied.ok).toBe(true);
     expect(harness.getState().document.nodes.site_location.content).toBe('The Annex');
+    expect(harness.getState().document.nodes.graphic_location.content).toBe('The Annex');
     const validation = await harness.bridge.invoke('validate_document', {});
     expect(validation.ok).toBe(true);
     expect(validation.file).toEqual(expect.objectContaining({ fileName: 'Book Club' }));

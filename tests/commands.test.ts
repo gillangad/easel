@@ -38,12 +38,16 @@ describe('Easel commands', () => {
 
   it('applies shared context across Website and Graphic Frames', () => {
     const initial = createInitialState();
-    const updated = dispatchCommand(initial, { type: 'apply-context', values: [{ key: 'event.title', value: 'Shared event title' }, { key: 'event.date', value: '20 October 2026' }, { key: 'event.location', value: 'North room' }], source: 'agent' });
-    expect(updated.document.nodes.site_title.content).toBe('Shared event title');
-    expect(updated.document.nodes.graphic_title.content).toBe('Shared event title');
-    const manual = dispatchCommand(updated, { type: 'update-elements', updates: [{ id: 'site_title', content: 'Human revision' }], source: 'human' });
-    expect(manual.document.nodes.site_title.binding?.key).toBe('event.title');
-    expect(manual.document.nodes.site_title.binding?.sharedValue).toBe('Shared event title');
+    const updated = dispatchCommand(initial, { type: 'apply-context', values: [{ key: 'event.date', value: '20 October 2026' }, { key: 'event.time', value: '7:00 PM' }, { key: 'event.venue', value: 'North room' }], source: 'agent' });
+    expect(updated.document.nodes.site_date.content).toBe('20 October 2026');
+    expect(updated.document.nodes.graphic_date.content).toBe('20 October 2026');
+    expect(updated.document.nodes.site_time.content).toBe('7:00 PM');
+    expect(updated.document.nodes.graphic_time.content).toBe('7:00 PM');
+    expect(updated.document.nodes.site_location.content).toBe('North room');
+    expect(updated.document.nodes.graphic_location.content).toBe('North room');
+    const manual = dispatchCommand(updated, { type: 'update-elements', updates: [{ id: 'site_date', content: 'Human revision' }], source: 'human' });
+    expect(manual.document.nodes.site_date.binding?.key).toBe('event.date');
+    expect(manual.document.nodes.site_date.binding?.sharedValue).toBe('20 October 2026');
     const report = validateDocumentModel(manual.document, manual.lastAction);
     expect(report.counts['inconsistent-binding']).toBeGreaterThan(0);
   });
@@ -92,9 +96,11 @@ describe('Easel commands', () => {
     expect(Object.values(inserted.document.nodes).filter((node) => ['Rect', 'Oval', 'Rule', 'Direction', 'Badge'].includes(node.name))).toHaveLength(5);
     const polygon = Object.values(inserted.document.nodes).find((node) => node.name === 'Badge');
     expect(polygon?.shape?.sides).toBe(8);
-    const asset = initial.document.assets.asset_book_club_reading;
-    const placed = dispatchCommand(inserted, { type: 'place-asset', assetId: asset.id, frameId: 'artboard_website', position: { x: 40, y: 40 }, width: 200, source: 'human' });
-    const image = Object.values(placed.document.nodes).find((node) => node.type === 'image' && node.parentId === 'artboard_website' && node.id !== 'site_image');
+    const withAsset = dispatchCommand(initial, { type: 'import-asset', asset: { id: 'asset_test', dataUrl: 'data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%22200%22%20height=%22100%22/%3E', originalName: 'test.svg', naturalWidth: 200, naturalHeight: 100, aspectRatio: 2, palette: [], sourceLabel: 'Test', createdAt: '2026-09-03T00:00:00.000Z' }, source: 'human' });
+    const insertedWithAsset = dispatchCommand(withAsset, { type: 'insert-elements', frameId: 'artboard_website', source: 'human', elements: [{ type: 'rectangle', name: 'Asset host', width: 100, height: 80 }] });
+    const asset = insertedWithAsset.document.assets.asset_test;
+    const placed = dispatchCommand(insertedWithAsset, { type: 'place-asset', assetId: asset.id, frameId: 'artboard_website', position: { x: 40, y: 40 }, width: 200, source: 'human' });
+    const image = Object.values(placed.document.nodes).find((node) => node.type === 'image' && node.parentId === 'artboard_website');
     expect(image?.height).toBeCloseTo(200 / asset.aspectRatio);
     expect(image?.parentId).toBe('artboard_website');
   });

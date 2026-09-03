@@ -65,6 +65,8 @@ function validDocument(value: unknown): value is DocumentModel {
 function isLegacySeed(document: DocumentModel): boolean {
   return document.id === 'document_easel'
     && document.revision <= 1
+    && document.pages[0]?.name === 'Launch set'
+    && document.nodes.site_title?.name === 'Event title'
     && Boolean(document.nodes.site_title?.content?.includes('Make room'))
     && !document.nodes.site_tagline;
 }
