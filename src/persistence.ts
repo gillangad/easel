@@ -69,7 +69,7 @@ function isLegacySeed(document: DocumentModel): boolean {
     && document.nodes.site_title?.name === 'Event title'
     && Boolean(document.nodes.site_title?.content?.includes('Make room'))
     && !document.nodes.site_tagline;
-  const isOldBookClubSeed = document.id === 'document_easel'
+  const isOldDarkBookClubSeed = document.id === 'document_easel'
     && document.revision <= 1
     && document.name === 'Book Club'
     && document.pages[0]?.name === 'Canvas'
@@ -79,7 +79,18 @@ function isLegacySeed(document: DocumentModel): boolean {
     && document.nodes.site_title?.content === 'After Hours Book Club'
     && document.nodes.graphic_title?.content === 'Quiet books. Good company.'
     && Object.keys(document.assets).length === 0;
-  return isOldLaunchSeed || isOldBookClubSeed;
+  const isOldLightBookClubSeed = document.id === 'document_easel'
+    && document.revision <= 1
+    && document.name === 'Book Club'
+    && document.pages[0]?.name === 'Canvas'
+    && document.nodes.website_background?.style?.fill === '#fbfaf7'
+    && document.nodes.graphic_background?.style?.fill === '#e7e1d6'
+    && document.nodes.site_title?.name === 'Website Title'
+    && document.nodes.site_title?.content === 'Make room for\nmore ideas.'
+    && document.nodes.graphic_title?.content === 'Make room\nfor new ideas.'
+    && document.nodes.graphic_tagline?.content === 'Leave with a clearer next step.'
+    && Object.keys(document.assets).length === 0;
+  return isOldLaunchSeed || isOldDarkBookClubSeed || isOldLightBookClubSeed;
 }
 
 function migrateDocument(document: DocumentModel): DocumentModel {
@@ -87,8 +98,9 @@ function migrateDocument(document: DocumentModel): DocumentModel {
 }
 
 function fileRecord(document: DocumentModel, id = document.id, name = document.name, updatedAt = document.updatedAt, open = true): EaselFile {
+  const legacySeed = isLegacySeed(document);
   const migrated = migrateDocument(document);
-  return { id, name: name || migrated.name, document: migrated, updatedAt: updatedAt || migrated.updatedAt, open };
+  return { id, name: legacySeed ? migrated.name : name || migrated.name, document: migrated, updatedAt: updatedAt || migrated.updatedAt, open };
 }
 
 function payloadFromState(state: EditorState): PersistedPayload {
@@ -116,8 +128,9 @@ function payloadFromUnknown(value: unknown): PersistedPayload | null {
   }
   if (isRecord(value.file) && validDocument(value.file.document)) {
     const file = value.file as Record<string, unknown>;
-    const document = migrateDocument(value.file.document as DocumentModel);
-    return { version: 2, activeFileId: typeof file.id === 'string' ? file.id : document.id, files: [fileRecord(document, typeof file.id === 'string' ? file.id : undefined, typeof file.name === 'string' ? file.name : undefined, typeof file.updatedAt === 'string' ? file.updatedAt : undefined, file.open !== false)], theme, panels };
+    const document = value.file.document as DocumentModel;
+    const migrated = migrateDocument(document);
+    return { version: 2, activeFileId: typeof file.id === 'string' ? file.id : migrated.id, files: [fileRecord(document, typeof file.id === 'string' ? file.id : undefined, typeof file.name === 'string' ? file.name : undefined, typeof file.updatedAt === 'string' ? file.updatedAt : undefined, file.open !== false)], theme, panels };
   }
   if (validDocument(value.document)) {
     const document = migrateDocument(value.document);

@@ -30,7 +30,7 @@ describe('Easel commands', () => {
     const titleId = 'site_title';
     const locked = dispatchCommand(initial, { type: 'toggle-locked', ids: [titleId], locked: true, source: 'human' });
     const attempted = dispatchCommand(locked, { type: 'update-elements', updates: [{ id: titleId, content: 'Do not replace me' }], source: 'agent' });
-    expect(attempted.document.nodes[titleId].content).toContain('Make room');
+    expect(attempted.document.nodes[titleId].content).toContain('After Hours');
     expect(attempted.lastAction?.skippedIds).toContain(titleId);
     const forced = dispatchCommand(attempted, { type: 'update-elements', updates: [{ id: titleId, content: 'Force reviewed copy' }], force: true, source: 'agent' });
     expect(forced.document.nodes[titleId].content).toBe('Force reviewed copy');

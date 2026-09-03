@@ -35,7 +35,7 @@ describe('Site Tool bridge', () => {
     const harness = makeHarness();
     const result = await harness.bridge.invoke('inspect_document', { maxFrames: 2, maxLayers: 4 });
     expect(result.ok).toBe(true);
-    expect(result.file).toEqual(expect.objectContaining({ fileId: 'document_easel', fileName: 'Book Club', frameCount: 2 }));
+    expect(result.file).toEqual(expect.objectContaining({ fileId: 'document_easel', fileName: 'After Hours Book Club', frameCount: 2 }));
     expect(result.canvas).toEqual({ id: 'canvas', name: 'Canvas' });
     expect(result.frames).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'artboard_website', name: 'Website', type: 'frame' }),
@@ -81,8 +81,8 @@ describe('Site Tool bridge', () => {
     expect(ambiguous.ok).toBe(false);
     expect(ambiguous.error?.code).toBe('AMBIGUOUS_TARGET');
     expect(ambiguous.error?.details).toEqual(expect.objectContaining({ matchCount: 2, candidates: expect.any(Array) }));
-    expect(harness.getState().document.nodes.site_title.content).toContain('Make room');
-    expect(harness.getState().document.nodes.graphic_title.content).toContain('new ideas');
+    expect(harness.getState().document.nodes.site_title.content).toContain('After Hours');
+    expect(harness.getState().document.nodes.graphic_title.content).toContain('Quiet books');
 
     const missing = await harness.bridge.invoke('update_elements', { updates: [{ target: { frameName: 'Website', name: 'Missing Layer', type: 'text' }, content: 'No match' }] });
     expect(missing.ok).toBe(false);
@@ -177,7 +177,7 @@ describe('Site Tool bridge', () => {
     expect(result.file).toEqual(expect.objectContaining({ fileId: 'file_second', fileName: 'Second File' }));
     expect(harness.getState().activeFileId).toBe('file_second');
     expect(harness.getState().document.nodes.site_title.content).toBe('Second copy');
-    expect(harness.getState().files.find((file) => file.id === 'document_easel')?.document.nodes.site_title.content).toContain('Make room');
+    expect(harness.getState().files.find((file) => file.id === 'document_easel')?.document.nodes.site_title.content).toContain('After Hours');
   });
 
   it('applies bindings, validates, exports, and returns recoverable input errors', async () => {
@@ -190,7 +190,7 @@ describe('Site Tool bridge', () => {
     expect(harness.getState().document.nodes.graphic_location.content).toBe('The Annex');
     const validation = await harness.bridge.invoke('validate_document', {});
     expect(validation.ok).toBe(true);
-    expect(validation.file).toEqual(expect.objectContaining({ fileName: 'Book Club' }));
+    expect(validation.file).toEqual(expect.objectContaining({ fileName: 'After Hours Book Club' }));
     const exported = await harness.bridge.invoke('export_frames', { frameIds: ['artboard_website'], format: 'svg', scale: 2 });
     expect(exported.ok).toBe(true);
     expect(exported.frameIds).toEqual(['artboard_website']);
