@@ -3,6 +3,7 @@ import {
   type ArtboardPreset,
   type DesignNode,
   type DocumentModel,
+  type EaselFile,
   type EditorState,
   type ImageAsset,
   type LayoutStyle,
@@ -12,8 +13,10 @@ import {
   type PanelsState,
   type Point,
   type Size,
+  type SemanticTarget,
   type Viewport,
 } from './types';
+import { STARTER_READING_ASSET_ID, STARTER_READING_DATA_URL } from './starterAssets';
 
 export const MAX_HISTORY = 100;
 
@@ -38,10 +41,37 @@ export const DEFAULT_VIEWPORT: Viewport = {
   pan: { x: 120, y: 86 },
 };
 
+export const LEFT_PANEL_DEFAULT_WIDTH = 244;
+export const LEFT_PANEL_MIN_WIDTH = 200;
+export const LEFT_PANEL_MAX_WIDTH = 420;
+
 export const DEFAULT_PANELS: PanelsState = {
   leftOpen: true,
   rightOpen: true,
+  leftWidth: LEFT_PANEL_DEFAULT_WIDTH,
 };
+
+export function getLeftPanelBounds(viewportWidth = Number.POSITIVE_INFINITY): { minimum: number; maximum: number } {
+  const safeViewportWidth = Number.isFinite(viewportWidth) ? Math.max(0, viewportWidth) : Number.POSITIVE_INFINITY;
+  const viewportMaximum = Number.isFinite(safeViewportWidth) ? Math.floor(safeViewportWidth * 0.4) : LEFT_PANEL_MAX_WIDTH;
+  const maximum = Math.min(LEFT_PANEL_MAX_WIDTH, viewportMaximum);
+  return { minimum: Math.min(LEFT_PANEL_MIN_WIDTH, maximum), maximum };
+}
+
+export function clampLeftPanelWidth(value: number, viewportWidth = Number.POSITIVE_INFINITY): number {
+  const bounds = getLeftPanelBounds(viewportWidth);
+  const candidate = Number.isFinite(value) ? Math.round(value) : LEFT_PANEL_DEFAULT_WIDTH;
+  return Math.min(bounds.maximum, Math.max(bounds.minimum, candidate));
+}
+
+export function normalizePanels(value: unknown): PanelsState {
+  const candidate = typeof value === 'object' && value !== null ? value as Partial<PanelsState> : undefined;
+  return {
+    leftOpen: candidate?.leftOpen !== false,
+    rightOpen: candidate?.rightOpen !== false,
+    leftWidth: clampLeftPanelWidth(typeof candidate?.leftWidth === 'number' ? candidate.leftWidth : LEFT_PANEL_DEFAULT_WIDTH),
+  };
+}
 
 export function defaultNodeStyle(type: NodeType): NodeStyle {
   if (type === 'text') {
@@ -50,6 +80,7 @@ export function defaultNodeStyle(type: NodeType): NodeStyle {
       opacity: 1,
       borderColor: 'transparent',
       borderWidth: 0,
+      borderStyle: 'solid',
       borderRadius: 0,
       color: '#171717',
       fontFamily: 'Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
@@ -66,6 +97,7 @@ export function defaultNodeStyle(type: NodeType): NodeStyle {
       opacity: 1,
       borderColor: '#d9d9d5',
       borderWidth: 1,
+      borderStyle: 'solid',
       borderRadius: 0,
       color: '#171717',
       fontFamily: 'Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
@@ -82,6 +114,7 @@ export function defaultNodeStyle(type: NodeType): NodeStyle {
       opacity: 1,
       borderColor: 'transparent',
       borderWidth: 0,
+      borderStyle: 'solid',
       borderRadius: 0,
       color: '#171717',
       fontFamily: 'Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
@@ -98,7 +131,25 @@ export function defaultNodeStyle(type: NodeType): NodeStyle {
       opacity: 1,
       borderColor: '#d9d9d5',
       borderWidth: 1,
+      borderStyle: 'solid',
       borderRadius: 8,
+      color: '#171717',
+      fontFamily: 'Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+      fontSize: 16,
+      fontWeight: 400,
+      lineHeight: 1.4,
+      letterSpacing: 0,
+      textAlign: 'left',
+    };
+  }
+  if (type === 'line' || type === 'arrow') {
+    return {
+      fill: 'transparent',
+      opacity: 1,
+      borderColor: '#171717',
+      borderWidth: 2,
+      borderStyle: 'solid',
+      borderRadius: 0,
       color: '#171717',
       fontFamily: 'Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
       fontSize: 16,
@@ -113,6 +164,7 @@ export function defaultNodeStyle(type: NodeType): NodeStyle {
     opacity: 1,
     borderColor: 'transparent',
     borderWidth: 0,
+    borderStyle: 'solid',
     borderRadius: 10,
     color: '#171717',
     fontFamily: 'Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
@@ -139,6 +191,7 @@ type MakeNodeInput = Pick<DesignNode, 'id' | 'type' | 'name' | 'pageId' | 'paren
   childIds?: string[];
   style?: Partial<NodeStyle>;
   layout?: Partial<LayoutStyle>;
+  shape?: DesignNode['shape'];
   content?: string;
   image?: DesignNode['image'];
   hidden?: boolean;
@@ -162,6 +215,7 @@ export function makeNode(input: MakeNodeInput): DesignNode {
     rotation: input.rotation ?? 0,
     style: { ...defaultNodeStyle(input.type), ...input.style },
     layout: input.layout ? { ...defaultLayout(), ...input.layout } : input.type === 'artboard' || input.type === 'frame' ? defaultLayout() : undefined,
+    shape: input.shape ? deepClone(input.shape) : input.type === 'polygon' ? { sides: 6 } : undefined,
     content: input.content,
     image: input.image ? deepClone(input.image) : undefined,
     hidden: input.hidden ?? false,
@@ -228,14 +282,42 @@ function seedFrame(
   return makeNode({ id, type: 'frame', name, pageId, parentId, x, y, width, height, style, layout });
 }
 
+function seedImage(
+  id: string,
+  pageId: string,
+  parentId: string,
+  name: string,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  assetId: string,
+  binding?: DesignNode['binding'],
+): DesignNode {
+  return makeNode({
+    id,
+    type: 'image',
+    name,
+    pageId,
+    parentId,
+    x,
+    y,
+    width,
+    height,
+    style: { borderRadius: 18, borderWidth: 0 },
+    image: { assetId, originalName: 'book-club-reading.svg', naturalWidth: 720, naturalHeight: 520, aspectRatio: 720 / 520, role: 'content', label: name, alt: 'A quiet stack of books beside a reading lamp', palette: ['#ece5d9', '#5d7381', '#c98968', '#7d8b67'] },
+    binding,
+  });
+}
+
 export function createInitialDocument(): DocumentModel {
-  const pageId = 'page_launch';
+  const pageId = 'page_canvas';
   const websiteId = 'artboard_website';
-  const posterId = 'artboard_poster';
-  const page: Page = { id: pageId, name: 'Launch set', rootIds: [] };
+  const graphicId = 'artboard_graphic';
+  const page: Page = { id: pageId, name: 'Canvas', rootIds: [] };
   const document: DocumentModel = {
     id: 'document_easel',
-    name: 'Untitled design',
+    name: 'Book Club',
     pages: [page],
     activePageId: pageId,
     nodes: {},
@@ -246,63 +328,75 @@ export function createInitialDocument(): DocumentModel {
     updatedAt: nowIso(),
   };
 
+  document.assets[STARTER_READING_ASSET_ID] = {
+    id: STARTER_READING_ASSET_ID,
+    dataUrl: STARTER_READING_DATA_URL,
+    originalName: 'book-club-reading.svg',
+    naturalWidth: 720,
+    naturalHeight: 520,
+    aspectRatio: 720 / 520,
+    palette: ['#ece5d9', '#5d7381', '#c98968', '#7d8b67'],
+    sourceLabel: 'Starter',
+    createdAt: nowIso(),
+  };
+
   addNode(document, makeNode({
     id: websiteId,
     type: 'artboard',
-    name: 'Website desktop',
+    name: 'Website',
     pageId,
     parentId: null,
     x: 80,
     y: 100,
-    width: ARTBOARD_PRESETS['website-desktop'].width,
-    height: ARTBOARD_PRESETS['website-desktop'].height,
+    width: 880,
+    height: 600,
     style: { fill: '#fbfaf7' },
   }));
-  addNode(document, seedFrame('site_header', pageId, websiteId, 'Navigation', 52, 34, 1336, 52, { borderColor: '#e8e5df', borderWidth: 0 }));
-  addNode(document, seedText('site_wordmark', pageId, 'site_header', 'Wordmark', 'FIELD NOTES', 0, 14, 180, 24, { fontSize: 13, fontWeight: 600, letterSpacing: 1.8 }));
-  addNode(document, seedText('site_nav_one', pageId, 'site_header', 'Nav one', 'Program', 1000, 14, 90, 24, { fontSize: 13, fontWeight: 500, color: '#6b6b6b' }));
-  addNode(document, seedText('site_nav_two', pageId, 'site_header', 'Nav two', 'Details', 1110, 14, 90, 24, { fontSize: 13, fontWeight: 500, color: '#6b6b6b' }));
-  addNode(document, seedText('site_nav_three', pageId, 'site_header', 'Nav three', 'Register', 1220, 14, 110, 24, { fontSize: 13, fontWeight: 600 }));
-  addNode(document, seedText('site_kicker', pageId, websiteId, 'Kicker', 'A GATHERING FOR CURIOUS MAKERS', 88, 184, 430, 24, { fontSize: 13, fontWeight: 600, letterSpacing: 1.7, color: '#8b5e3c' }));
-  addNode(document, seedText('site_title', pageId, websiteId, 'Event title', 'Make room for\nnew ideas.', 84, 232, 720, 190, { fontSize: 78, fontWeight: 600, lineHeight: 1.02, letterSpacing: -2.2 }, { key: 'event.title', sourceLabel: 'Working brief', lastUpdatedAt: nowIso(), sharedValue: 'Make room for\nnew ideas.' }));
-  addNode(document, seedText('site_body', pageId, websiteId, 'Intro copy', 'A two-day studio of talks, working sessions, and generous questions. Bring the thing you are still figuring out.', 92, 460, 390, 76, { fontSize: 17, fontWeight: 400, lineHeight: 1.45, color: '#5f5c57' }));
-  addNode(document, seedRectangle('site_cta', pageId, websiteId, 'Primary button', 92, 582, 190, 58, { fill: '#171717', borderRadius: 29 }));
-  addNode(document, seedText('site_cta_label', pageId, 'site_cta', 'Button label', 'Save a seat', 34, 18, 122, 24, { color: '#ffffff', fontSize: 14, fontWeight: 600, textAlign: 'center' }));
-  addNode(document, seedFrame('site_meta', pageId, websiteId, 'Event facts', 850, 246, 414, 320, { fill: '#efede8', borderRadius: 18 }, { clipContent: true }));
-  addNode(document, seedText('site_meta_label', pageId, 'site_meta', 'Facts label', 'THE SHORT VERSION', 36, 36, 210, 20, { fontSize: 12, fontWeight: 600, letterSpacing: 1.4, color: '#8b5e3c' }));
-  addNode(document, seedText('site_date', pageId, 'site_meta', 'Event date', '16–18 September 2026', 36, 86, 340, 42, { fontSize: 25, fontWeight: 500 }, { key: 'event.date', sourceLabel: 'Calendar', lastUpdatedAt: nowIso(), sharedValue: '16–18 September 2026' }));
-  addNode(document, seedText('site_location', pageId, 'site_meta', 'Event location', 'Riverside Hall · Pune', 36, 148, 340, 34, { fontSize: 16, fontWeight: 500 }, { key: 'event.location', sourceLabel: 'Calendar', lastUpdatedAt: nowIso(), sharedValue: 'Riverside Hall · Pune' }));
-  addNode(document, seedText('site_approved', pageId, 'site_meta', 'Approved line', '“Leave with a clearer next step.”', 36, 224, 340, 54, { fontSize: 16, fontWeight: 500, lineHeight: 1.35 }, { key: 'approved.heading', sourceLabel: 'Review notes', lastUpdatedAt: nowIso(), sharedValue: '“Leave with a clearer next step.”' }));
-  addNode(document, seedFrame('site_footer', pageId, websiteId, 'Footer', 88, 812, 1264, 1, { fill: '#171717' }));
+  addNode(document, seedFrame('site_header', pageId, websiteId, 'Website header', 42, 30, 796, 34, { borderColor: '#e8e5df', borderWidth: 0 }));
+  addNode(document, seedText('site_wordmark', pageId, 'site_header', 'Website wordmark', 'THE READING ROOM', 0, 7, 220, 20, { fontSize: 11, fontWeight: 600, letterSpacing: 1.6, color: '#6e5038' }));
+  addNode(document, seedText('site_header_note', pageId, 'site_header', 'Website header note', 'A small gathering for curious readers', 490, 7, 306, 20, { fontSize: 11, fontWeight: 500, color: '#6b6b6b', textAlign: 'right' }));
+  addNode(document, seedText('site_kicker', pageId, websiteId, 'Website kicker', 'ONE EVENING · ONE GOOD BOOK', 54, 94, 330, 20, { fontSize: 11, fontWeight: 600, letterSpacing: 1.5, color: '#8b5e3c' }));
+  addNode(document, seedText('site_title', pageId, websiteId, 'Website title', 'After Hours Book Club', 50, 128, 470, 142, { fontSize: 54, fontWeight: 600, lineHeight: 1.02, letterSpacing: -1.8 }, { key: 'event.title', sourceLabel: 'Book Club brief', lastUpdatedAt: nowIso(), sharedValue: 'After Hours Book Club' }));
+  addNode(document, seedText('site_tagline', pageId, websiteId, 'Website tagline', 'Good books. Better conversations.', 54, 298, 420, 36, { fontSize: 19, fontWeight: 400, lineHeight: 1.3, color: '#5f5c57' }, { key: 'event.tagline', sourceLabel: 'Book Club brief', lastUpdatedAt: nowIso(), sharedValue: 'Good books. Better conversations.' }));
+  addNode(document, seedText('site_date', pageId, websiteId, 'Website date', 'September 18 · 7:00 PM', 54, 374, 330, 30, { fontSize: 16, fontWeight: 600 }, { key: 'event.date', sourceLabel: 'Book Club brief', lastUpdatedAt: nowIso(), sharedValue: 'September 18 · 7:00 PM' }));
+  addNode(document, seedText('site_location', pageId, websiteId, 'Website location', 'The Reading Room', 54, 410, 330, 26, { fontSize: 14, fontWeight: 500, color: '#6b6b6b' }, { key: 'event.location', sourceLabel: 'Book Club brief', lastUpdatedAt: nowIso(), sharedValue: 'The Reading Room' }));
+  addNode(document, seedRectangle('site_cta', pageId, websiteId, 'Website action', 54, 474, 222, 50, { fill: '#171717', borderRadius: 25 }));
+  addNode(document, seedText('site_cta_label', pageId, 'site_cta', 'Website action label', 'Join the next gathering', 18, 15, 186, 22, { color: '#ffffff', fontSize: 13, fontWeight: 600, textAlign: 'center' }));
+  addNode(document, seedImage('site_image', pageId, websiteId, 'Website hero image', 570, 100, 254, 350, STARTER_READING_ASSET_ID, { key: 'event.image', sourceLabel: 'Starter', lastUpdatedAt: nowIso(), sharedValue: STARTER_READING_ASSET_ID }));
+  addNode(document, seedFrame('site_meta', pageId, websiteId, 'Website details', 570, 474, 254, 70, { fill: '#efede8', borderRadius: 16 }, { clipContent: true }));
+  addNode(document, seedText('site_meta_label', pageId, 'site_meta', 'Website details label', 'THE READING ROOM · SEPTEMBER', 16, 24, 222, 20, { fontSize: 10, fontWeight: 600, letterSpacing: 1.1, color: '#8b5e3c' }));
 
   addNode(document, makeNode({
-    id: posterId,
+    id: graphicId,
     type: 'artboard',
-    name: 'Poster portrait',
+    name: 'Graphic',
     pageId,
     parentId: null,
-    x: 1700,
+    x: 1120,
     y: 100,
-    width: ARTBOARD_PRESETS['poster-portrait'].width,
-    height: ARTBOARD_PRESETS['poster-portrait'].height,
+    width: 480,
+    height: 600,
     style: { fill: '#e7e1d6' },
   }));
-  addNode(document, seedText('poster_kicker', pageId, posterId, 'Poster kicker', 'FIELD NOTES / 2026', 86, 82, 400, 32, { fontSize: 15, fontWeight: 600, letterSpacing: 2, color: '#6e5038' }));
-  addNode(document, seedText('poster_title', pageId, posterId, 'Poster title', 'Make room\nfor new ideas.', 82, 276, 820, 252, { fontSize: 96, fontWeight: 600, lineHeight: 0.98, letterSpacing: -3.4 }, { key: 'event.title', sourceLabel: 'Working brief', lastUpdatedAt: nowIso(), sharedValue: 'Make room\nfor new ideas.' }));
-  addNode(document, seedRectangle('poster_rule', pageId, posterId, 'Poster rule', 88, 606, 904, 3, { fill: '#171717' }));
-  addNode(document, seedText('poster_date', pageId, posterId, 'Poster date', '16–18 SEP 2026', 86, 674, 430, 34, { fontSize: 21, fontWeight: 600, letterSpacing: 1.4 }, { key: 'event.date', sourceLabel: 'Calendar', lastUpdatedAt: nowIso(), sharedValue: '16–18 September 2026' }));
-  addNode(document, seedText('poster_location', pageId, posterId, 'Poster location', 'RIVERSIDE HALL · PUNE', 86, 728, 620, 30, { fontSize: 16, fontWeight: 500, letterSpacing: 1.2, color: '#6e5038' }, { key: 'event.location', sourceLabel: 'Calendar', lastUpdatedAt: nowIso(), sharedValue: 'Riverside Hall · Pune' }));
-  addNode(document, seedFrame('poster_stamp', pageId, posterId, 'Poster stamp', 730, 1110, 250, 120, { fill: '#171717', borderRadius: 60 }));
-  addNode(document, seedText('poster_stamp_text', pageId, 'poster_stamp', 'Stamp label', 'SAVE\nYOUR SEAT', 32, 30, 186, 58, { color: '#ffffff', fontSize: 17, fontWeight: 600, textAlign: 'center', lineHeight: 1.1, letterSpacing: 1.2 }));
-  addNode(document, seedText('poster_approved', pageId, posterId, 'Poster approved line', 'Leave with a clearer next step.', 86, 1198, 650, 40, { fontSize: 19, fontWeight: 500 }, { key: 'approved.heading', sourceLabel: 'Review notes', lastUpdatedAt: nowIso(), sharedValue: '“Leave with a clearer next step.”' }));
+  addNode(document, seedText('graphic_kicker', pageId, graphicId, 'Graphic kicker', 'AFTER HOURS', 32, 34, 260, 24, { fontSize: 12, fontWeight: 600, letterSpacing: 1.8, color: '#6e5038' }));
+  addNode(document, seedText('graphic_title', pageId, graphicId, 'Graphic title', 'After Hours Book Club', 32, 92, 400, 120, { fontSize: 42, fontWeight: 600, lineHeight: 1.02, letterSpacing: -1.3 }, { key: 'event.title', sourceLabel: 'Book Club brief', lastUpdatedAt: nowIso(), sharedValue: 'After Hours Book Club' }));
+  addNode(document, seedText('graphic_tagline', pageId, graphicId, 'Graphic tagline', 'Good books. Better conversations.', 34, 236, 380, 36, { fontSize: 15, fontWeight: 400, color: '#5f5c57' }, { key: 'event.tagline', sourceLabel: 'Book Club brief', lastUpdatedAt: nowIso(), sharedValue: 'Good books. Better conversations.' }));
+  addNode(document, seedImage('graphic_image', pageId, graphicId, 'Graphic image', 32, 318, 416, 194, STARTER_READING_ASSET_ID, { key: 'event.image', sourceLabel: 'Starter', lastUpdatedAt: nowIso(), sharedValue: STARTER_READING_ASSET_ID }));
+  addNode(document, seedText('graphic_date', pageId, graphicId, 'Graphic date', 'September 18 · 7:00 PM', 34, 536, 260, 24, { fontSize: 13, fontWeight: 600 }, { key: 'event.date', sourceLabel: 'Book Club brief', lastUpdatedAt: nowIso(), sharedValue: 'September 18 · 7:00 PM' }));
+  addNode(document, seedText('graphic_location', pageId, graphicId, 'Graphic location', 'The Reading Room', 34, 564, 260, 20, { fontSize: 12, fontWeight: 500, color: '#6e5038' }, { key: 'event.location', sourceLabel: 'Book Club brief', lastUpdatedAt: nowIso(), sharedValue: 'The Reading Room' }));
+  addNode(document, seedRectangle('graphic_action', pageId, graphicId, 'Graphic action', 280, 536, 168, 48, { fill: '#171717', borderRadius: 24 }));
+  addNode(document, seedText('graphic_action_label', pageId, 'graphic_action', 'Graphic action label', 'Join the next gathering', 12, 14, 144, 20, { color: '#ffffff', fontSize: 11, fontWeight: 600, textAlign: 'center' }));
 
   document.selection = { ids: [websiteId], primaryId: websiteId };
   return document;
 }
 
 export function createInitialState(): EditorState {
+  const document = createInitialDocument();
   return {
-    document: createInitialDocument(),
+    document,
+    files: [{ id: document.id, name: document.name, document: deepClone(document), updatedAt: document.updatedAt, open: true }],
+    activeFileId: document.id,
     theme: 'light',
     panels: deepClone(DEFAULT_PANELS),
     history: [],
@@ -311,6 +405,18 @@ export function createInitialState(): EditorState {
     focus: null,
     preview: null,
   };
+}
+
+export function syncActiveFile(state: EditorState): EditorState {
+  const activeFileId = state.activeFileId || state.document.id;
+  const files = Array.isArray(state.files) ? state.files : [];
+  const currentRecord = files.find((file) => file.id === activeFileId);
+  const currentFile: EaselFile = { id: activeFileId, name: state.document.name, document: deepClone(state.document), updatedAt: state.document.updatedAt, open: true };
+  if (currentRecord) currentFile.open = true;
+  const index = files.findIndex((file) => file.id === activeFileId);
+  const nextFiles = files.map((file) => file.id === activeFileId ? currentFile : file);
+  if (index < 0) nextFiles.push(currentFile);
+  return { ...state, activeFileId, files: nextFiles };
 }
 
 export function getPage(document: DocumentModel, pageId = document.activePageId): Page | undefined {
@@ -324,6 +430,10 @@ export function getNode(document: DocumentModel, nodeId: string | null | undefin
 export function getArtboards(document: DocumentModel, pageId = document.activePageId): DesignNode[] {
   const page = getPage(document, pageId);
   return page ? page.rootIds.map((id) => document.nodes[id]).filter((node): node is DesignNode => Boolean(node && node.type === 'artboard')) : [];
+}
+
+export function getFrames(document: DocumentModel, pageId = document.activePageId): DesignNode[] {
+  return getArtboards(document, pageId);
 }
 
 export function getPageNodeIds(document: DocumentModel, pageId = document.activePageId): string[] {
@@ -427,6 +537,44 @@ export function getArtboardForNode(document: DocumentModel, nodeId: string): Des
     node = node.parentId ? document.nodes[node.parentId] : undefined;
   }
   return undefined;
+}
+
+export function normalizeLineEndings(value: string): string {
+  return value.replace(/\r\n?/g, '\n');
+}
+
+export function hasSemanticTargetSelector(target: SemanticTarget): boolean {
+  return target.frameId !== undefined || target.frameName !== undefined || target.artboardId !== undefined || target.artboardName !== undefined || target.name !== undefined || target.content !== undefined || target.bindingKey !== undefined;
+}
+
+export function matchesSemanticTarget(document: DocumentModel, node: DesignNode, target: SemanticTarget): boolean {
+  if (target.pageId !== undefined && node.pageId !== target.pageId) return false;
+  if (target.type !== undefined && !(target.type === 'frame' && (node.type === 'frame' || node.type === 'artboard')) && node.type !== target.type) return false;
+  const artboard = getArtboardForNode(document, node.id);
+  if (target.frameId !== undefined && artboard?.id !== target.frameId) return false;
+  if (target.frameName !== undefined && (!artboard || artboard.name.trim().toLowerCase() !== target.frameName.trim().toLowerCase())) return false;
+  if (target.artboardId !== undefined && artboard?.id !== target.artboardId) return false;
+  if (target.artboardName !== undefined && (!artboard || artboard.name.trim().toLowerCase() !== target.artboardName.trim().toLowerCase())) return false;
+  if (target.name !== undefined && node.name.trim().toLowerCase() !== target.name.trim().toLowerCase()) return false;
+  if (target.content !== undefined && (node.content === undefined || normalizeLineEndings(node.content) !== normalizeLineEndings(target.content))) return false;
+  if (target.bindingKey !== undefined && node.binding?.key !== target.bindingKey) return false;
+  return true;
+}
+
+export function getSemanticTargetScopeNodes(document: DocumentModel, target: SemanticTarget): DesignNode[] {
+  return getPageNodeIds(document, target.pageId ?? document.activePageId)
+    .map((id) => document.nodes[id])
+    .filter((node): node is DesignNode => Boolean(node));
+}
+
+export function getAncestorIds(document: DocumentModel, nodeId: string): string[] {
+  const result: string[] = [];
+  let node = document.nodes[nodeId];
+  while (node?.parentId) {
+    result.push(node.parentId);
+    node = document.nodes[node.parentId];
+  }
+  return result;
 }
 
 export function getAsset(document: DocumentModel, assetId: string | undefined): ImageAsset | undefined {

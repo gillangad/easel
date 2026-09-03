@@ -15,6 +15,7 @@ import {
   type NodeType,
   type Page,
   type Point,
+  type SemanticTarget,
   type ThemeMode,
   type Viewport,
 } from './types';
@@ -33,10 +34,13 @@ import {
   getDescendantIds,
   getPage,
   getPageNodeIds,
+  getSemanticTargetScopeNodes,
+  hasSemanticTargetSelector,
   insertAfter,
   isDescendant,
   makeNode,
   makeSnapshotState,
+  matchesSemanticTarget,
   nowIso,
   removeFromArray,
   restoreSnapshot,
@@ -46,12 +50,14 @@ import {
 export class CommandError extends Error {
   code: string;
   affectedIds: string[];
+  details?: Record<string, unknown>;
 
-  constructor(code: string, message: string, affectedIds: string[] = []) {
+  constructor(code: string, message: string, affectedIds: string[] = [], details?: Record<string, unknown>) {
     super(message);
     this.name = 'CommandError';
     this.code = code;
     this.affectedIds = affectedIds;
+    this.details = details;
   }
 }
 
@@ -80,9 +86,12 @@ export type CreateArtboardInput = {
   position?: Point;
 };
 
+export type CreateFrameInput = CreateArtboardInput;
+
 export type InsertTarget = {
   pageId?: string;
   artboardId?: string;
+  frameId?: string;
   parentId?: string;
 };
 
@@ -120,7 +129,23 @@ export type ApplyContextInput = {
   force?: boolean;
 };
 
+export type PlaceAssetInput = {
+  asset?: ImageAsset;
+  assetId?: string;
+  frameId: string;
+  position: Point;
+  width?: number;
+  height?: number;
+  name?: string;
+  alt?: string;
+};
+
 export type ReorderDirection = 'forward' | 'backward' | 'front' | 'back';
+
+export type LayerReorderInput = {
+  id: string;
+  beforeId: string | null;
+};
 
 export type Command =
   | { type: 'set-document-name'; name: string; source?: ActionSource }
@@ -137,6 +162,7 @@ export type Command =
   | { type: 'toggle-hidden'; ids: string[]; hidden?: boolean; source?: ActionSource }
   | { type: 'toggle-locked'; ids: string[]; locked?: boolean; source?: ActionSource }
   | { type: 'reorder-elements'; ids: string[]; direction: ReorderDirection; source?: ActionSource }
+  | ({ type: 'reorder-layer'; source?: ActionSource } & LayerReorderInput)
   | { type: 'align-elements'; ids: string[]; alignment: 'left' | 'right' | 'top' | 'bottom' | 'horizontal-center' | 'vertical-center'; source?: ActionSource }
   | { type: 'distribute-elements'; ids: string[]; axis: 'horizontal' | 'vertical'; source?: ActionSource }
   | { type: 'group-elements'; ids: string[]; source?: ActionSource }
@@ -145,6 +171,8 @@ export type Command =
   | ({ type: 'apply-context' } & ApplyContextInput & { source?: ActionSource })
   | { type: 'unbind-context'; ids: string[]; source?: ActionSource }
   | { type: 'insert-image-asset'; asset: ImageAsset; position: Point; source?: ActionSource }
+  | { type: 'import-asset'; asset: ImageAsset; source?: ActionSource }
+  | ({ type: 'place-asset'; source?: ActionSource } & PlaceAssetInput)
   | { type: 'set-selection'; ids: string[]; additive?: boolean }
   | { type: 'set-viewport'; viewport: Viewport }
   | { type: 'set-theme'; theme: ThemeMode }
@@ -227,6 +255,7 @@ function makeMutation(
       changedIds: [...outcome.changedIds],
       skippedIds: [...outcome.skippedIds],
       failedIds: [...(outcome.failedIds ?? [])],
+      result: outcome.result,
       at: Date.now(),
     },
     focus: null,
@@ -240,7 +269,7 @@ function noOpOutcome(document: DocumentModel, message: string, skippedIds: strin
 
 function assertPage(document: DocumentModel, pageId: string): Page {
   const page = getPage(document, pageId);
-  if (!page) throw new CommandError('PAGE_NOT_FOUND', `No page has the ID “${pageId}”.`, [pageId]);
+  if (!page) throw new CommandError('CANVAS_NOT_FOUND', `No Canvas has the ID “${pageId}”.`, [pageId]);
   return page;
 }
 
@@ -252,8 +281,31 @@ function assertNode(document: DocumentModel, id: string): DesignNode {
 
 function assertArtboard(document: DocumentModel, id: string): DesignNode {
   const node = assertNode(document, id);
-  if (node.type !== 'artboard') throw new CommandError('NOT_AN_ARTBOARD', `Element “${id}” is not an artboard.`, [id]);
+  if (node.type !== 'artboard') throw new CommandError('NOT_A_FRAME', `Element “${id}” is not a Frame.`, [id]);
   return node;
+}
+
+function semanticCandidate(document: DocumentModel, node: DesignNode): Record<string, unknown> {
+  const artboard = getArtboardForNode(document, node.id);
+  return { id: node.id, name: node.name, type: node.type, frame: artboard ? { id: artboard.id, name: artboard.name } : null };
+}
+
+export function resolveSemanticTarget(document: DocumentModel, target: SemanticTarget): string {
+  if (!hasSemanticTargetSelector(target)) throw new CommandError('INVALID_TARGET', 'A semantic target needs frameId, frameName, name, content, or bindingKey.', [], { target });
+  const scoped = getSemanticTargetScopeNodes(document, target);
+  const matches = scoped.filter((node) => matchesSemanticTarget(document, node, target));
+  if (matches.length === 1) return matches[0].id;
+  if (matches.length > 1) {
+    const candidates = matches.slice(0, 8).map((node) => semanticCandidate(document, node));
+    throw new CommandError('AMBIGUOUS_TARGET', `The semantic target matched ${matches.length} Layers. Add an exact Frame or name filter.`, matches.map((node) => node.id), { target, matchCount: matches.length, candidates });
+  }
+  const targetArtboard = target.frameId ? document.nodes[target.frameId] : target.artboardId ? document.nodes[target.artboardId] : undefined;
+  const nearby = scoped
+    .filter((node) => target.type === undefined || node.type === target.type)
+    .filter((node) => !targetArtboard || node.id === targetArtboard.id || getArtboardForNode(document, node.id)?.id === targetArtboard.id)
+    .slice(0, 8)
+    .map((node) => semanticCandidate(document, node));
+  throw new CommandError('NOT_FOUND', 'No element matched the semantic target.', [], { target, matchCount: 0, candidates: nearby });
 }
 
 function removeNodeFromParent(document: DocumentModel, node: DesignNode): void {
@@ -284,7 +336,7 @@ function nextPlacement(document: DocumentModel, pageId: string): Point {
 }
 
 function validNodeType(type: unknown): type is NodeType {
-  return type === 'artboard' || type === 'frame' || type === 'text' || type === 'rectangle' || type === 'image';
+  return type === 'artboard' || type === 'frame' || type === 'text' || type === 'rectangle' || type === 'ellipse' || type === 'line' || type === 'arrow' || type === 'polygon' || type === 'image';
 }
 
 function validateStylePatch(style: Partial<NodeStyle> | undefined): Partial<NodeStyle> {
@@ -295,6 +347,8 @@ function validateStylePatch(style: Partial<NodeStyle> | undefined): Partial<Node
   if (style.borderColor !== undefined) next.borderColor = safeColor(style.borderColor, 'border color');
   if (style.opacity !== undefined) next.opacity = clamp(ensureFinite(style.opacity, 'opacity', 0, 1), 0, 1);
   if (style.borderWidth !== undefined) next.borderWidth = ensureFinite(style.borderWidth, 'border width', 0, 100);
+  if (style.borderStyle !== undefined && !['solid', 'dashed', 'dotted'].includes(style.borderStyle)) throw new CommandError('INVALID_STYLE', 'stroke style must be solid, dashed, or dotted.');
+  if (style.borderStyle !== undefined) next.borderStyle = style.borderStyle;
   if (style.borderRadius !== undefined) next.borderRadius = ensureFinite(style.borderRadius, 'border radius', 0, MAX_NODE_DIMENSION);
   if (style.fontFamily !== undefined) next.fontFamily = ensureString(style.fontFamily, 'font family', 160);
   if (style.fontSize !== undefined) next.fontSize = ensureFinite(style.fontSize, 'font size', 1, 400);
@@ -304,6 +358,13 @@ function validateStylePatch(style: Partial<NodeStyle> | undefined): Partial<Node
   if (style.letterSpacing !== undefined) next.letterSpacing = ensureFinite(style.letterSpacing, 'letter spacing', -40, 80);
   if (style.textAlign !== undefined && !['left', 'center', 'right'].includes(style.textAlign)) throw new CommandError('INVALID_STYLE', 'text alignment must be left, center, or right.');
   if (style.textAlign !== undefined) next.textAlign = style.textAlign;
+  return next;
+}
+
+function validateShapePatch(shape: { sides?: number } | undefined): { sides?: number } {
+  if (!shape) return {};
+  const next: { sides?: number } = {};
+  if (shape.sides !== undefined) next.sides = Math.round(ensureFinite(shape.sides, 'polygon sides', 3, 12));
   return next;
 }
 
@@ -342,8 +403,70 @@ function validateImageMetadata(document: DocumentModel, image: (Partial<ImageMet
   };
 }
 
+function assetSummary(asset: ImageAsset): Record<string, unknown> {
+  return { assetId: asset.id, name: asset.originalName, source: asset.sourceLabel ?? 'Uploaded', type: 'image', dimensions: { width: asset.naturalWidth, height: asset.naturalHeight } };
+}
+
+function upsertAsset(document: DocumentModel, input: ImageAsset): ImageAsset {
+  if (!input.dataUrl.startsWith('data:image/')) throw new CommandError('UNSUPPORTED_IMAGE', 'Only supported image data can be added.');
+  if (input.dataUrl.length > 1_500_000) throw new CommandError('IMAGE_TOO_LARGE', 'Image data must be smaller than 1.5 MB.');
+  const existing = Object.values(document.assets).find((asset) => asset.dataUrl === input.dataUrl);
+  if (existing) return existing;
+  const asset = deepClone(input);
+  asset.sourceLabel = asset.sourceLabel?.slice(0, 40) || 'Uploaded';
+  asset.originalName = asset.originalName.slice(0, 160) || 'Image asset';
+  asset.naturalWidth = Math.max(1, Math.round(asset.naturalWidth));
+  asset.naturalHeight = Math.max(1, Math.round(asset.naturalHeight));
+  asset.aspectRatio = asset.naturalWidth / asset.naturalHeight;
+  document.assets[asset.id] = asset;
+  return asset;
+}
+
+function placeAssetMutation(document: DocumentModel, input: PlaceAssetInput): MutationOutcome {
+  const frame = assertNode(document, input.frameId);
+  if (frame.type !== 'artboard' && frame.type !== 'frame') throw new CommandError('INVALID_TARGET', 'frameId must reference a Frame.', [frame.id]);
+  if (isEffectivelyLocked(document, frame.id)) return noOpOutcome(document, 'The target Frame is locked.', [frame.id]);
+  const asset = input.asset ? upsertAsset(document, input.asset) : input.assetId ? document.assets[input.assetId] : undefined;
+  if (!asset) throw new CommandError('ASSET_NOT_FOUND', 'Provide an existing assetId or image data to place.', [input.assetId ?? '']);
+  const ratio = asset.aspectRatio > 0 ? asset.aspectRatio : asset.naturalWidth / Math.max(1, asset.naturalHeight);
+  let width = input.width ?? Math.min(360, Math.max(140, asset.naturalWidth));
+  let height = input.height ?? width / ratio;
+  if (input.width !== undefined && input.height === undefined) height = width / ratio;
+  if (input.height !== undefined && input.width === undefined) width = height * ratio;
+  width = ensureDimension(width, 'width');
+  height = ensureDimension(height, 'height');
+  const node = makeNode({
+    id: createId('image'),
+    type: 'image',
+    name: input.name ? ensureString(input.name, 'layer name') : asset.originalName || 'Image layer',
+    pageId: frame.pageId,
+    parentId: frame.id,
+    x: ensureFinite(input.position.x, 'x'),
+    y: ensureFinite(input.position.y, 'y'),
+    width,
+    height,
+    style: { borderRadius: 12, borderWidth: 0 },
+    image: {
+      assetId: asset.id,
+      originalName: asset.originalName,
+      naturalWidth: asset.naturalWidth,
+      naturalHeight: asset.naturalHeight,
+      aspectRatio: asset.aspectRatio,
+      role: 'content',
+      label: asset.originalName,
+      alt: input.alt?.slice(0, 240) || asset.originalName,
+      palette: asset.palette.slice(0, 6),
+    },
+  });
+  document.nodes[node.id] = node;
+  frame.childIds.push(node.id);
+  document.selection = { ids: [node.id], primaryId: node.id };
+  const bounds = { x: node.x, y: node.y, width: node.width, height: node.height, rotation: node.rotation };
+  return { document, changedIds: [asset.id, node.id], skippedIds: [], result: { assetId: asset.id, layerId: node.id, layerName: node.name, frame: { id: frame.id, name: frame.name, type: 'frame' }, bounds, source: asset.sourceLabel ?? 'Uploaded' }, message: `Added image to ${frame.name}` };
+}
+
 function createElementFromSpec(document: DocumentModel, pageId: string, parentId: string | null, spec: ElementSpec, index: number): DesignNode {
-  if (!validNodeType(spec.type) || spec.type === 'artboard') throw new CommandError('INVALID_ELEMENT', 'Element type must be frame, text, rectangle, or image inside an artboard.');
+  if (!validNodeType(spec.type) || spec.type === 'artboard') throw new CommandError('INVALID_ELEMENT', 'Element type must be frame, text, rectangle, ellipse, line, arrow, polygon, or image inside a frame.');
   if (spec.type === 'text' && typeof spec.content !== 'string') throw new CommandError('INVALID_ELEMENT', 'Text elements need content.');
   if (spec.content !== undefined && spec.content.length > MAX_TEXT_LENGTH) throw new CommandError('INVALID_ELEMENT', `Text content must be at most ${MAX_TEXT_LENGTH} characters.`);
   const node = makeNode({
@@ -359,6 +482,7 @@ function createElementFromSpec(document: DocumentModel, pageId: string, parentId
     rotation: ensureFinite(spec.rotation ?? 0, 'rotation', -360, 360),
     style: { ...defaultNodeStyle(spec.type), ...validateStylePatch(spec.style) },
     layout: spec.type === 'frame' ? { ...defaultLayout(), ...validateLayoutPatch(spec.layout) } : undefined,
+    shape: spec.shape ? validateShapePatch(spec.shape) : undefined,
     content: spec.content,
     hidden: spec.hidden ?? false,
     locked: spec.locked ?? false,
@@ -402,8 +526,12 @@ function patchNode(document: DocumentModel, node: DesignNode, patch: ElementPatc
     node.content = patch.content;
   }
   if (patch.style !== undefined) node.style = { ...node.style, ...validateStylePatch(patch.style) };
+  if (patch.shape !== undefined) {
+    if (node.type !== 'polygon') throw new CommandError('INVALID_SHAPE', 'Only polygon layers accept shape properties.', [node.id]);
+    node.shape = { ...(node.shape ?? {}), ...validateShapePatch(patch.shape) };
+  }
   if (patch.layout !== undefined) {
-    if (node.type !== 'frame' && node.type !== 'artboard') throw new CommandError('INVALID_LAYOUT', 'Only frames and artboards accept layout settings.', [node.id]);
+    if (node.type !== 'frame' && node.type !== 'artboard') throw new CommandError('INVALID_LAYOUT', 'Only Frames accept layout settings.', [node.id]);
     node.layout = { ...defaultLayout(), ...(node.layout ?? {}), ...validateLayoutPatch(patch.layout) };
   }
   if (patch.image !== undefined) {
@@ -425,10 +553,10 @@ function patchNode(document: DocumentModel, node: DesignNode, patch: ElementPatc
 
 function moveNodeToParent(document: DocumentModel, node: DesignNode, newParentId: string | null): void {
   if (newParentId === node.id || (newParentId && isDescendant(document, newParentId, node.id))) throw new CommandError('INVALID_HIERARCHY', 'An element cannot become its own descendant.', [node.id]);
-  if (node.type === 'artboard' && newParentId !== null) throw new CommandError('INVALID_HIERARCHY', 'Artboards must remain at page root.', [node.id]);
+  if (node.type === 'artboard' && newParentId !== null) throw new CommandError('INVALID_HIERARCHY', 'Frames must remain at the Canvas root.', [node.id]);
   if (newParentId) {
     const parent = assertNode(document, newParentId);
-    if (parent.pageId !== node.pageId || (parent.type !== 'frame' && parent.type !== 'artboard')) throw new CommandError('INVALID_HIERARCHY', 'Elements can only move into a frame or artboard on the same page.', [node.id, newParentId]);
+    if (parent.pageId !== node.pageId || (parent.type !== 'frame' && parent.type !== 'artboard')) throw new CommandError('INVALID_HIERARCHY', 'Layers can only move into a Frame on the same Canvas.', [node.id, newParentId]);
   }
   const oldParent = node.parentId ? document.nodes[node.parentId] : undefined;
   const oldPage = getPage(document, node.pageId);
@@ -513,16 +641,16 @@ export function dispatchCommand(state: EditorState, command: Command): EditorSta
         return { ...restored, history: [...state.history, { ...current, label: entry.label }], future: state.future.slice(1), lastAction: null };
       }
       case 'set-document-name':
-        return makeMutation(state, 'Renamed document', command.source ?? 'human', (document) => {
-          const name = ensureString(command.name, 'Document name');
-          if (document.name === name) return noOpOutcome(document, 'Document name is unchanged.');
+        return makeMutation(state, 'Renamed File', command.source ?? 'human', (document) => {
+          const name = ensureString(command.name, 'File name');
+          if (document.name === name) return noOpOutcome(document, 'File name is unchanged.');
           document.name = name;
-          return { document, changedIds: [], skippedIds: [], message: `Renamed document to ${name}` };
+          return { document, changedIds: [], skippedIds: [], message: `Renamed File to ${name}` };
         });
       case 'create-page': {
         const pageId = createId('page');
-        return makeMutation(state, 'Created page', command.source ?? 'human', (document) => {
-          let name = command.name ? ensureString(command.name, 'Page name') : `Page ${document.pages.length + 1}`;
+        return makeMutation(state, 'Created Canvas', command.source ?? 'human', (document) => {
+          let name = command.name ? ensureString(command.name, 'Canvas name') : `Canvas ${document.pages.length + 1}`;
           let suffix = 2;
           while (document.pages.some((page) => page.name.toLowerCase() === name.toLowerCase())) name = `${name} ${suffix++}`;
           document.pages.push({ id: pageId, name, rootIds: [] });
@@ -532,16 +660,16 @@ export function dispatchCommand(state: EditorState, command: Command): EditorSta
         });
       }
       case 'rename-page':
-        return makeMutation(state, 'Renamed page', command.source ?? 'human', (document) => {
+        return makeMutation(state, 'Renamed Canvas', command.source ?? 'human', (document) => {
           const page = assertPage(document, command.pageId);
-          const name = ensureString(command.name, 'Page name');
-          if (document.pages.some((candidate) => candidate.id !== page.id && candidate.name.toLowerCase() === name.toLowerCase())) throw new CommandError('DUPLICATE_NAME', `A page named “${name}” already exists.`, [page.id]);
+          const name = ensureString(command.name, 'Canvas name');
+          if (document.pages.some((candidate) => candidate.id !== page.id && candidate.name.toLowerCase() === name.toLowerCase())) throw new CommandError('DUPLICATE_NAME', `A Canvas named “${name}” already exists.`, [page.id]);
           page.name = name;
-          return { document, changedIds: [page.id], skippedIds: [], message: `Renamed page to ${name}` };
+          return { document, changedIds: [page.id], skippedIds: [], message: `Renamed Canvas to ${name}` };
         });
       case 'delete-page':
-        return makeMutation(state, 'Deleted page', command.source ?? 'human', (document) => {
-          if (document.pages.length <= 1) throw new CommandError('LAST_PAGE', 'Keep at least one page in the document.');
+        return makeMutation(state, 'Deleted Canvas', command.source ?? 'human', (document) => {
+          if (document.pages.length <= 1) throw new CommandError('LAST_CANVAS', 'Keep at least one Canvas in the File.');
           const page = assertPage(document, command.pageId);
           const deletedIds = page.rootIds.flatMap((id) => deleteSubtree(document, id));
           document.pages = document.pages.filter((candidate) => candidate.id !== page.id);
@@ -551,24 +679,24 @@ export function dispatchCommand(state: EditorState, command: Command): EditorSta
         });
       case 'create-artboard': {
         const nodeId = createId('artboard');
-        return makeMutation(state, 'Created artboard', command.source ?? 'human', (document) => {
+        return makeMutation(state, 'Created Frame', command.source ?? 'human', (document) => {
           const page = assertPage(document, document.activePageId);
-          const name = ensureString(command.name, 'Artboard name');
+          const name = ensureString(command.name, 'Frame name');
           const preset = command.preset ? ensurePreset(command.preset) : undefined;
-          if (command.preset && !preset) throw new CommandError('INVALID_PRESET', `Unsupported artboard preset “${command.preset}”.`);
+           if (command.preset && !preset) throw new CommandError('INVALID_PRESET', `Unsupported frame preset “${command.preset}”.`);
           const size = preset ?? { width: ensureDimension(command.width, 'width'), height: ensureDimension(command.height, 'height') };
           const position = command.position ?? nextPlacement(document, page.id);
           const node = makeNode({ id: nodeId, type: 'artboard', name, pageId: page.id, parentId: null, x: ensureFinite(position.x, 'x'), y: ensureFinite(position.y, 'y'), width: size.width, height: size.height, style: { fill: '#ffffff' } });
           document.nodes[node.id] = node;
           page.rootIds.push(node.id);
           document.selection = { ids: [node.id], primaryId: node.id };
-          return { document, changedIds: [node.id], skippedIds: [], message: `Created ${name}` };
+          return { document, changedIds: [node.id], skippedIds: [], result: { createdIds: [node.id], frameId: node.id, frame: { id: node.id, name: node.name, type: 'frame', width: node.width, height: node.height } }, message: `Created Frame ${name}` };
         });
       }
       case 'insert-elements':
         return makeMutation(state, 'Inserted elements', command.source ?? 'human', (document) => insertElementsMutation(document, command));
       case 'write-artboard':
-        return makeMutation(state, 'Wrote artboard', command.source ?? 'agent', (document) => writeArtboardMutation(document, command));
+        return makeMutation(state, 'Wrote frame', command.source ?? 'agent', (document) => writeArtboardMutation(document, command));
       case 'update-elements':
         return makeMutation(state, 'Updated elements', command.source ?? 'human', (document) => updateElementsMutation(document, command));
       case 'duplicate-elements':
@@ -589,6 +717,8 @@ export function dispatchCommand(state: EditorState, command: Command): EditorSta
         return makeMutation(state, 'Changed locks', command.source ?? 'human', (document) => toggleNodeProperty(document, command.ids, 'locked', command.locked, true));
       case 'reorder-elements':
         return makeMutation(state, 'Reordered elements', command.source ?? 'human', (document) => reorderMutation(document, command.ids, command.direction));
+      case 'reorder-layer':
+        return makeMutation(state, 'Reordered layer', command.source ?? 'human', (document) => reorderLayerMutation(document, command));
       case 'align-elements':
         return makeMutation(state, 'Aligned elements', command.source ?? 'human', (document) => alignMutation(document, command.ids, command.alignment));
       case 'distribute-elements':
@@ -620,36 +750,42 @@ export function dispatchCommand(state: EditorState, command: Command): EditorSta
         });
       case 'insert-image-asset':
         return makeMutation(state, 'Inserted reference image', command.source ?? 'human', (document) => {
-          if (!command.asset.dataUrl.startsWith('data:image/')) throw new CommandError('UNSUPPORTED_IMAGE', 'Only local image data can be added.');
-          document.assets[command.asset.id] = deepClone(command.asset);
+          const asset = upsertAsset(document, command.asset);
           const page = assertPage(document, document.activePageId);
           const node = makeNode({
             id: createId('image'),
             type: 'image',
-            name: command.asset.originalName || 'Reference image',
+            name: asset.originalName || 'Image layer',
             pageId: page.id,
             parentId: null,
             x: ensureFinite(command.position.x, 'x'),
             y: ensureFinite(command.position.y, 'y'),
-            width: Math.min(720, Math.max(240, command.asset.naturalWidth)),
-            height: Math.min(560, Math.max(180, command.asset.naturalHeight)),
+            width: Math.min(420, Math.max(160, asset.naturalWidth)),
+            height: Math.min(320, Math.max(120, asset.naturalHeight)),
             image: {
-              assetId: command.asset.id,
-              originalName: command.asset.originalName,
-              naturalWidth: command.asset.naturalWidth,
-              naturalHeight: command.asset.naturalHeight,
-              aspectRatio: command.asset.aspectRatio,
-              role: 'reference',
-              label: command.asset.originalName || 'Reference image',
-              alt: command.asset.originalName || 'Reference image',
-              palette: command.asset.palette.slice(0, 6),
+              assetId: asset.id,
+              originalName: asset.originalName,
+              naturalWidth: asset.naturalWidth,
+              naturalHeight: asset.naturalHeight,
+              aspectRatio: asset.aspectRatio,
+              role: 'content',
+              label: asset.originalName || 'Image layer',
+              alt: asset.originalName || 'Image layer',
+              palette: asset.palette.slice(0, 6),
             },
           });
           document.nodes[node.id] = node;
           page.rootIds.push(node.id);
           document.selection = { ids: [node.id], primaryId: node.id };
-          return { document, changedIds: [node.id, command.asset.id], skippedIds: [], message: 'Inserted reference image' };
+          return { document, changedIds: [node.id, asset.id], skippedIds: [], result: { assetId: asset.id, layerId: node.id, layerName: node.name, frame: null, bounds: { x: node.x, y: node.y, width: node.width, height: node.height } }, message: 'Added image to Canvas' };
         });
+      case 'import-asset':
+        return makeMutation(state, 'Added asset', command.source ?? 'human', (document) => {
+          const asset = upsertAsset(document, command.asset);
+          return { document, changedIds: [asset.id], skippedIds: [], result: { assetId: asset.id, asset: assetSummary(asset), deduplicated: asset.id !== command.asset.id }, message: `Added ${asset.originalName || 'asset'}` };
+        });
+      case 'place-asset':
+        return makeMutation(state, 'Added image', command.source ?? 'human', (document) => placeAssetMutation(document, command));
     default:
       return state;
   }
@@ -665,8 +801,8 @@ export function tryDispatchCommand(state: EditorState, command: Command): { stat
 }
 
 function insertElementsMutation(document: DocumentModel, input: InsertElementsInput): MutationOutcome {
-  const targets = [input.pageId, input.artboardId, input.parentId].filter(Boolean);
-  if (targets.length !== 1) throw new CommandError('AMBIGUOUS_TARGET', 'Provide exactly one of pageId, artboardId, or parentId.');
+  const targets = [input.pageId, input.artboardId, input.frameId, input.parentId].filter(Boolean);
+  if (targets.length !== 1) throw new CommandError('AMBIGUOUS_TARGET', 'Provide exactly one of pageId, frameId, or parentId.');
   if (!input.elements.length || countSpecs(input.elements) > 100) throw new CommandError('TOO_MANY_NODES', 'Insert between 1 and 100 total nodes.');
   let pageId: string;
   let parentId: string | null = null;
@@ -676,41 +812,81 @@ function insertElementsMutation(document: DocumentModel, input: InsertElementsIn
     const artboard = assertArtboard(document, input.artboardId);
     pageId = artboard.pageId;
     parentId = artboard.id;
-    if (isEffectivelyLocked(document, artboard.id)) return noOpOutcome(document, 'The target artboard is locked.', [artboard.id]);
+    if (isEffectivelyLocked(document, artboard.id)) return noOpOutcome(document, 'The target Frame is locked.', [artboard.id]);
+  } else if (input.frameId) {
+    const frame = assertNode(document, input.frameId);
+    if (frame.type !== 'artboard' && frame.type !== 'frame') throw new CommandError('INVALID_TARGET', 'frameId must reference a Frame.', [frame.id]);
+    pageId = frame.pageId;
+    parentId = frame.id;
+    if (isEffectivelyLocked(document, frame.id)) return noOpOutcome(document, 'The target Frame is locked.', [frame.id]);
   } else {
     const parent = assertNode(document, input.parentId as string);
-    if (parent.type !== 'frame' && parent.type !== 'artboard') throw new CommandError('INVALID_TARGET', 'parentId must reference a frame or artboard.', [parent.id]);
+    if (parent.type !== 'frame' && parent.type !== 'artboard') throw new CommandError('INVALID_TARGET', 'parentId must reference a Frame.', [parent.id]);
     pageId = parent.pageId;
     parentId = parent.id;
     if (isEffectivelyLocked(document, parent.id)) return noOpOutcome(document, 'The target parent is locked.', [parent.id]);
   }
   const changedIds: string[] = [];
+  const createdIds: string[] = [];
   input.elements.forEach((spec, index) => {
     const node = createElementFromSpec(document, pageId, parentId, spec, index);
-    changedIds.push(...getDescendantIds(document, node.id));
+    const ids = getDescendantIds(document, node.id);
+    changedIds.push(...ids);
+    createdIds.push(...ids);
   });
   document.selection = { ids: changedIds.filter((id) => document.nodes[id].parentId === parentId), primaryId: changedIds[changedIds.length - 1] ?? null };
-  return { document, changedIds, skippedIds: [], message: `Inserted ${changedIds.length} element${changedIds.length === 1 ? '' : 's'}` };
+  return { document, changedIds, skippedIds: [], result: { createdIds }, message: `Added ${changedIds.length} layer${changedIds.length === 1 ? '' : 's'}` };
 }
 
 function writeArtboardMutation(document: DocumentModel, input: WriteArtboardInput): MutationOutcome {
   const artboard = assertArtboard(document, input.artboardId);
-  if (isEffectivelyLocked(document, artboard.id) && !input.force) return noOpOutcome(document, 'The target artboard is locked.', [artboard.id]);
+  if (isEffectivelyLocked(document, artboard.id) && !input.force) return noOpOutcome(document, 'The target Frame is locked.', [artboard.id]);
   if (!input.elements.length || countSpecs(input.elements) > 100) throw new CommandError('TOO_MANY_NODES', 'Write between 1 and 100 total nodes.');
   const descendants = artboard.childIds.flatMap((id) => getDescendantIds(document, id));
   const locked = descendants.filter((id) => isEffectivelyLocked(document, id));
   if (input.mode === 'replace' && locked.length && !input.force) throw new CommandError('LOCKED_NODE', 'Replace would remove locked content. Retry with force: true after deliberate review.', locked);
   const changedIds: string[] = [];
+  const createdIds: string[] = [];
   if (input.mode === 'replace') {
     [...artboard.childIds].forEach((id) => changedIds.push(...deleteSubtree(document, id)));
     artboard.childIds = [];
   }
   input.elements.forEach((spec, index) => {
     const node = createElementFromSpec(document, artboard.pageId, artboard.id, spec, index);
-    changedIds.push(...getDescendantIds(document, node.id));
+    const ids = getDescendantIds(document, node.id);
+    changedIds.push(...ids);
+    createdIds.push(...ids);
   });
   document.selection = { ids: artboard.childIds.slice(), primaryId: artboard.childIds[artboard.childIds.length - 1] ?? artboard.id };
-  return { document, changedIds, skippedIds: [], message: `${input.mode === 'replace' ? 'Replaced' : 'Appended'} ${artboard.name}` };
+  return { document, changedIds, skippedIds: [], result: { createdIds }, message: `${input.mode === 'replace' ? 'Replaced' : 'Appended'} ${artboard.name}` };
+}
+
+function changedValueRecord(node: DesignNode, patches: ElementPatch[]): Record<string, unknown> {
+  const values: Record<string, unknown> = {};
+  const has = (key: string): boolean => patches.some((patch) => Object.prototype.hasOwnProperty.call(patch, key));
+  if (has('name')) values.name = node.name;
+  if (has('x')) values.x = node.x;
+  if (has('y')) values.y = node.y;
+  if (has('width')) values.width = node.width;
+  if (has('height')) values.height = node.height;
+  if (has('rotation')) values.rotation = node.rotation;
+  if (has('content')) values.content = node.content;
+  if (has('parentId')) values.parentId = node.parentId;
+  if (has('hidden')) values.hidden = node.hidden;
+  if (has('locked')) values.locked = node.locked;
+  if (has('shape')) values.shape = node.shape ? deepClone(node.shape) : undefined;
+  const styleKeys = [...new Set(patches.flatMap((patch) => Object.entries(patch.style ?? {}).filter(([, value]) => value !== undefined).map(([key]) => key)))];
+  if (styleKeys.length) values.style = Object.fromEntries(styleKeys.map((key) => [key, node.style[key as keyof NodeStyle]]));
+  const layoutKeys = [...new Set(patches.flatMap((patch) => Object.entries(patch.layout ?? {}).filter(([, value]) => value !== undefined).map(([key]) => key)))];
+  if (layoutKeys.length) values.layout = Object.fromEntries(layoutKeys.map((key) => [key, node.layout?.[key as keyof LayoutStyle]]));
+  if (has('image')) values.image = node.image ? { assetId: node.image.assetId, role: node.image.role, label: node.image.label, alt: node.image.alt } : null;
+  return values;
+}
+
+function changedNodeRecord(document: DocumentModel, node: DesignNode, patches: ElementPatch[]): Record<string, unknown> {
+  const artboard = getArtboardForNode(document, node.id);
+  const rect = getAbsoluteRect(document, node.id);
+  return { id: node.id, name: node.name, type: node.type === 'artboard' ? 'frame' : node.type, frame: artboard ? { id: artboard.id, name: artboard.name } : null, bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height, rotation: rect.rotation }, values: changedValueRecord(node, patches) };
 }
 
 function updateElementsMutation(document: DocumentModel, input: UpdateElementsInput): MutationOutcome {
@@ -718,10 +894,16 @@ function updateElementsMutation(document: DocumentModel, input: UpdateElementsIn
   const changedIds: string[] = [];
   const skippedIds: string[] = [];
   const failedIds: string[] = [];
-  input.updates.forEach((patch) => {
-    const node = document.nodes[patch.id];
+  const resolvedUpdates = input.updates.map((patch) => {
+    const id = patch.id ?? resolveSemanticTarget(document, patch.target);
+    return { id, patch };
+  });
+  const patchesById = new Map<string, ElementPatch[]>();
+  resolvedUpdates.forEach(({ id, patch }) => patchesById.set(id, [...(patchesById.get(id) ?? []), patch]));
+  resolvedUpdates.forEach(({ id, patch }) => {
+    const node = document.nodes[id];
     if (!node) {
-      failedIds.push(patch.id);
+      failedIds.push(id);
       return;
     }
     if (isEffectivelyLocked(document, node.id) && !input.force) {
@@ -730,16 +912,19 @@ function updateElementsMutation(document: DocumentModel, input: UpdateElementsIn
     }
     const backup = deepClone(node);
     try {
-      patchNode(document, node, patch);
+      patchNode(document, node, { ...patch, id } as ElementPatch & { id: string });
       if (patch.parentId !== undefined) moveNodeToParent(document, node, patch.parentId);
       changedIds.push(node.id);
     } catch {
-      document.nodes[patch.id] = backup;
+      document.nodes[id] = backup;
       failedIds.push(node.id);
     }
   });
-  if (!changedIds.length && failedIds.length) return { document, changedIds, skippedIds, failedIds, message: 'No requested updates could be applied.' };
-  return { document, changedIds, skippedIds, failedIds, message: `Updated ${changedIds.length} element${changedIds.length === 1 ? '' : 's'}` };
+  const uniqueChangedIds = uniqueIds(changedIds);
+  const changed = uniqueChangedIds.map((id) => changedNodeRecord(document, document.nodes[id], patchesById.get(id) ?? []));
+  const result = { changed, changedCount: uniqueChangedIds.length };
+  if (!uniqueChangedIds.length && failedIds.length) return { document, changedIds: uniqueChangedIds, skippedIds, failedIds, result, message: 'No requested updates could be applied.' };
+  return { document, changedIds: uniqueChangedIds, skippedIds, failedIds, result, message: `Updated ${uniqueChangedIds.length} layer${uniqueChangedIds.length === 1 ? '' : 's'}` };
 }
 
 function duplicateMutation(document: DocumentModel, input: DuplicateInput): MutationOutcome {
@@ -757,7 +942,7 @@ function duplicateMutation(document: DocumentModel, input: DuplicateInput): Muta
     changedIds.push(...getDescendantIds(document, root));
   });
   document.selection = { ids: changedIds.filter((id) => !document.nodes[id].parentId || !changedIds.includes(document.nodes[id].parentId)), primaryId: changedIds[changedIds.length - 1] ?? null };
-  return { document, changedIds, skippedIds, message: `Duplicated ${changedIds.length} element${changedIds.length === 1 ? '' : 's'}` };
+  return { document, changedIds, skippedIds, result: { createdIds: [...changedIds], mappings: mapping }, message: `Duplicated ${changedIds.length} layer${changedIds.length === 1 ? '' : 's'}` };
 }
 
 function deleteMutation(document: DocumentModel, input: DeleteInput): MutationOutcome {
@@ -767,7 +952,7 @@ function deleteMutation(document: DocumentModel, input: DeleteInput): MutationOu
   const changedIds: string[] = [];
   ids.filter((id) => !skippedIds.includes(id)).forEach((id) => changedIds.push(...deleteSubtree(document, id)));
   updateSelectionAfterDeletion(document);
-  return { document, changedIds, skippedIds, message: `Deleted ${changedIds.length} element${changedIds.length === 1 ? '' : 's'}` };
+  return { document, changedIds, skippedIds, result: { deletedIds: [...changedIds] }, message: `Deleted ${changedIds.length} layer${changedIds.length === 1 ? '' : 's'}` };
 }
 
 function toggleNodeProperty(document: DocumentModel, ids: string[], property: 'hidden' | 'locked', value: boolean | undefined, allowLocked: boolean): MutationOutcome {
@@ -791,7 +976,7 @@ function toggleNodeProperty(document: DocumentModel, ids: string[], property: 'h
       changedIds.push(id);
     }
   });
-  return { document, changedIds, skippedIds, message: `Changed ${changedIds.length} element${changedIds.length === 1 ? '' : 's'}` };
+  return { document, changedIds, skippedIds, message: `Changed ${changedIds.length} layer${changedIds.length === 1 ? '' : 's'}` };
 }
 
 function reorderMutation(document: DocumentModel, ids: string[], direction: ReorderDirection): MutationOutcome {
@@ -813,6 +998,27 @@ function reorderMutation(document: DocumentModel, ids: string[], direction: Reor
     changedIds.push(id);
   });
   return { document, changedIds, skippedIds, message: `Reordered ${changedIds.length} element${changedIds.length === 1 ? '' : 's'}` };
+}
+
+function reorderLayerMutation(document: DocumentModel, input: LayerReorderInput): MutationOutcome {
+  const node = assertNode(document, input.id);
+  if (isEffectivelyLocked(document, node.id)) return noOpOutcome(document, 'Locked elements were skipped.', [node.id]);
+  const target = input.beforeId ? assertNode(document, input.beforeId) : undefined;
+  if (target && target.parentId !== node.parentId) throw new CommandError('INVALID_HIERARCHY', 'Layers can only be reordered within the same parent.', [node.id, target.id]);
+  const siblings = node.parentId ? document.nodes[node.parentId]?.childIds : getPage(document, node.pageId)?.rootIds;
+  if (!siblings) throw new CommandError('INVALID_HIERARCHY', 'Could not find the layer sibling list.', [node.id]);
+  if (target && !siblings.includes(target.id)) throw new CommandError('INVALID_TARGET', 'The target layer is not in the same sibling list.', [node.id, target.id]);
+  const currentIndex = siblings.indexOf(node.id);
+  if (currentIndex < 0) throw new CommandError('INVALID_TARGET', 'The layer is not in its parent sibling list.', [node.id]);
+  const next = siblings.filter((id) => id !== node.id);
+  const targetIndex = target ? next.indexOf(target.id) : next.length;
+  if (targetIndex < 0) throw new CommandError('INVALID_TARGET', 'The target layer could not be found.', [node.id, target?.id ?? '']);
+  next.splice(targetIndex, 0, node.id);
+  if (next.join('|') === siblings.join('|')) return noOpOutcome(document, 'Layer order is unchanged.');
+  if (node.parentId) document.nodes[node.parentId].childIds = next;
+  else assertPage(document, node.pageId).rootIds = next;
+  setNodeUpdated(node);
+  return { document, changedIds: [node.id], skippedIds: [], result: { order: next }, message: `Reordered ${node.name}` };
 }
 
 function sharedParent(document: DocumentModel, ids: string[]): { nodes: DesignNode[]; parentId: string | null } | null {
@@ -880,7 +1086,7 @@ function distributeMutation(document: DocumentModel, ids: string[], axis: 'horiz
 
 function groupMutation(document: DocumentModel, ids: string[]): MutationOutcome {
   const shared = sharedParent(document, ids);
-  if (!shared || shared.nodes.length < 2 || shared.nodes.some((node) => node.type === 'artboard')) throw new CommandError('INVALID_SELECTION', 'Group requires at least two non-artboard siblings in the same free-positioned parent.');
+  if (!shared || shared.nodes.length < 2 || shared.nodes.some((node) => node.type === 'artboard')) throw new CommandError('INVALID_SELECTION', 'Group requires at least two non-Frame siblings in the same free-positioned parent.');
   const parent = shared.parentId ? document.nodes[shared.parentId] : undefined;
   if (parent?.layout?.mode && parent.layout.mode !== 'free') throw new CommandError('INVALID_LAYOUT', 'Group is available for free-positioned parents.');
   const locked = shared.nodes.filter((node) => isEffectivelyLocked(document, node.id)).map((node) => node.id);
@@ -1030,7 +1236,7 @@ export function validateDocumentModel(document: DocumentModel, lastAction?: Edit
     if (node.width <= 0 || node.height <= 0 || node.width > MAX_NODE_DIMENSION || node.height > MAX_NODE_DIMENSION) push('dimensions', 'error', `${node.name} has invalid dimensions.`, [node.id]);
     if (node.type === 'text' && !(node.content ?? '').trim()) push('empty-text', 'warning', `${node.name} is empty.`, [node.id]);
     if (node.type === 'image' && (!node.image || !document.assets[node.image.assetId] || !document.assets[node.image.assetId].dataUrl.startsWith('data:image/'))) push('missing-image', 'error', `${node.name} is missing a supported local image asset.`, [node.id]);
-    if (node.hidden && (node.binding || node.type === 'artboard')) push('hidden-critical', 'warning', `${node.name} is hidden but carries shared or page-critical content.`, [node.id]);
+    if (node.hidden && (node.binding || node.type === 'artboard')) push('hidden-critical', 'warning', `${node.name} is hidden but carries shared or Canvas-critical content.`, [node.id]);
     if (node.type !== 'artboard') {
       const artboard = getArtboardForNode(document, node.id);
       if (artboard) {
@@ -1066,7 +1272,7 @@ export function validateDocumentModel(document: DocumentModel, lastAction?: Edit
     export: 0,
   } satisfies Record<ValidationIssue['type'], number>;
   issues.forEach((issue) => { counts[issue.type] += 1; });
-  return { valid: !issues.some((issue) => issue.severity === 'error'), revision: document.revision, scope: scope.pageId ?? (scope.artboardIds?.join(',') || 'document'), issues: issues.slice(0, 40), counts, checkedNodeCount: nodes.length };
+  return { valid: !issues.some((issue) => issue.severity === 'error'), revision: document.revision, scope: scope.pageId ?? (scope.artboardIds?.join(',') || 'File'), issues: issues.slice(0, 40), counts, checkedNodeCount: nodes.length };
 }
 
 export function selectNodes(state: EditorState, ids: string[], additive = false): EditorState {
@@ -1084,6 +1290,7 @@ export function selectionSummary(state: EditorState): DesignNode[] {
 export function replaceDocumentState(state: EditorState, document: DocumentModel): EditorState {
   const previous = makeSnapshotState(state);
   const nextDocument = deepClone(document);
+  nextDocument.id = state.activeFileId || state.document.id;
   nextDocument.selection = { ids: nextDocument.selection.ids.filter((id) => Boolean(nextDocument.nodes[id])), primaryId: nextDocument.selection.primaryId && nextDocument.nodes[nextDocument.selection.primaryId] ? nextDocument.selection.primaryId : null };
   return {
     ...state,
@@ -1097,5 +1304,5 @@ export function replaceDocumentState(state: EditorState, document: DocumentModel
 }
 
 export function createElementSpecFromNode(node: DesignNode, children?: ElementSpec[]): ElementSpec {
-  return { type: node.type, name: node.name, x: node.x, y: node.y, width: node.width, height: node.height, rotation: node.rotation, content: node.content, style: deepClone(node.style), layout: node.layout ? deepClone(node.layout) : undefined, image: node.image ? { ...deepClone(node.image), assetId: node.image.assetId } : undefined, hidden: node.hidden, locked: node.locked, binding: node.binding ? deepClone(node.binding) : undefined, children };
+  return { type: node.type, name: node.name, x: node.x, y: node.y, width: node.width, height: node.height, rotation: node.rotation, content: node.content, style: deepClone(node.style), layout: node.layout ? deepClone(node.layout) : undefined, shape: node.shape ? deepClone(node.shape) : undefined, image: node.image ? { ...deepClone(node.image), assetId: node.image.assetId } : undefined, hidden: node.hidden, locked: node.locked, binding: node.binding ? deepClone(node.binding) : undefined, children };
 }

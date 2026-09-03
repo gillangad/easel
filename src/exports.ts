@@ -7,6 +7,7 @@ export type PreparedExport = {
   fileName: string;
   format: ExportFormat;
   artboardId?: string;
+  frameId?: string;
   width?: number;
   height?: number;
   unsupported: string[];
@@ -33,7 +34,8 @@ function safeFilename(value: string): string {
 
 function styleAttributes(node: DesignNode): string {
   const style = node.style;
-  return `fill="${escapeXml(style.fill)}" fill-opacity="${style.opacity}" stroke="${escapeXml(style.borderColor)}" stroke-width="${style.borderWidth}" rx="${style.borderRadius}"`;
+  const dash = style.borderStyle === 'dashed' ? ' stroke-dasharray="10 7"' : style.borderStyle === 'dotted' ? ' stroke-dasharray="2 6"' : '';
+  return `fill="${escapeXml(style.fill)}" fill-opacity="${style.opacity}" stroke="${escapeXml(style.borderColor)}" stroke-width="${style.borderWidth}" stroke-linecap="round"${dash} rx="${style.borderRadius}"`;
 }
 
 function textLines(content: string, width: number, fontSize: number): string[] {
@@ -74,9 +76,35 @@ function nodeTransform(node: DesignNode, x: number, y: number): string {
   return ` transform="rotate(${node.rotation} ${cx} ${cy})"`;
 }
 
+function polygonPoints(node: DesignNode, x: number, y: number): string {
+  const sides = Math.min(12, Math.max(3, Math.round(node.shape?.sides ?? 6)));
+  return Array.from({ length: sides }, (_, index) => {
+    const angle = -Math.PI / 2 + (index * Math.PI * 2) / sides;
+    return `${x + node.width / 2 + Math.cos(angle) * node.width / 2},${y + node.height / 2 + Math.sin(angle) * node.height / 2}`;
+  }).join(' ');
+}
+
+function renderShape(node: DesignNode, x: number, y: number): string {
+  const attrs = styleAttributes(node);
+  if (node.type === 'ellipse') return `<ellipse cx="${x + node.width / 2}" cy="${y + node.height / 2}" rx="${node.width / 2}" ry="${node.height / 2}" ${attrs}/>`;
+  if (node.type === 'line' || node.type === 'arrow') {
+    const centerY = y + node.height / 2;
+    const line = `<line x1="${x}" y1="${centerY}" x2="${x + node.width}" y2="${centerY}" fill="none" ${attrs}/>`;
+    if (node.type === 'arrow') {
+      const tipX = x + node.width;
+      const tipY = centerY;
+      const size = Math.max(8, Math.min(22, Math.min(node.width, node.height || node.width) * 0.28));
+      return `${line}<path d="M ${tipX - size} ${tipY - size / 2} L ${tipX} ${tipY} L ${tipX - size} ${tipY + size / 2}" fill="none" stroke="${escapeXml(node.style.borderColor)}" stroke-width="${node.style.borderWidth}" stroke-linecap="round" stroke-linejoin="round"/>`;
+    }
+    return line;
+  }
+  if (node.type === 'polygon') return `<polygon points="${polygonPoints(node, x, y)}" ${attrs}/>`;
+  return `<rect x="${x}" y="${y}" width="${node.width}" height="${node.height}" ${attrs}/>`;
+}
+
 export function renderArtboardSvg(document: DocumentModel, artboardId: string, scale = 1): RenderedSvg {
   const artboard = document.nodes[artboardId];
-  if (!artboard || artboard.type !== 'artboard') throw new Error(`No artboard has the ID “${artboardId}”.`);
+  if (!artboard || artboard.type !== 'artboard') throw new Error(`No Frame has the ID “${artboardId}”.`);
   const unsupported: string[] = [];
   const clipId = `clip-${escapeXml(artboard.id)}`;
   const artboardRect = getAbsoluteRect(document, artboard.id);
@@ -91,13 +119,13 @@ export function renderArtboardSvg(document: DocumentModel, artboardId: string, s
     if (node.type === 'text') body = renderText(node, x, y);
     else if (node.type === 'image') {
       const asset = getAsset(document, node.image?.assetId);
-      if (asset?.dataUrl.startsWith('data:image/')) body = `<image href="${escapeXml(asset.dataUrl)}" x="${x}" y="${y}" width="${node.width}" height="${node.height}" preserveAspectRatio="none" opacity="${node.style.opacity}"/>`;
+      if (asset?.dataUrl.startsWith('data:image/')) body = `<image href="${escapeXml(asset.dataUrl)}" x="${x}" y="${y}" width="${node.width}" height="${node.height}" preserveAspectRatio="xMidYMid meet" opacity="${node.style.opacity}"/>`;
       else {
         unsupported.push(`${node.name}: unsupported or missing image asset`);
         body = `<rect x="${x}" y="${y}" width="${node.width}" height="${node.height}" ${styleAttributes({ ...node, style: { ...node.style, fill: '#ecece9' } })}/>`;
       }
-    } else {
-      body = `<rect x="${x}" y="${y}" width="${node.width}" height="${node.height}" ${styleAttributes(node)}/>`;
+    } else if (node.type === 'frame' || node.type === 'rectangle' || node.type === 'ellipse' || node.type === 'line' || node.type === 'arrow' || node.type === 'polygon') {
+      body = renderShape(node, x, y);
     }
     const children = node.childIds.map(renderNode).join('');
     const clip = node.layout?.clipContent ? ` clip-path="url(#clip-${escapeXml(node.id)})"` : '';
@@ -123,12 +151,12 @@ function inlineCss(node: DesignNode, x: number, y: number, relative = true): str
   const layoutCss = layout && layout.mode !== 'free'
     ? `display:flex;flex-direction:${layout.mode === 'flex-row' ? 'row' : 'column'};gap:${layout.gap}px;padding:${layout.padding}px;align-items:${alignItems};justify-content:${justifyContent};`
     : '';
-  return `${position}width:${node.width}px;height:${node.height}px;box-sizing:border-box;background:${style.fill};opacity:${style.opacity};border:${style.borderWidth}px solid ${style.borderColor};border-radius:${style.borderRadius}px;color:${style.color};font-family:${style.fontFamily};font-size:${style.fontSize}px;font-weight:${style.fontWeight};line-height:${style.lineHeight};letter-spacing:${style.letterSpacing}px;text-align:${style.textAlign};overflow:${layout?.clipContent ? 'hidden' : 'visible'};transform:rotate(${node.rotation}deg);${layoutCss}`;
+  return `${position}width:${node.width}px;height:${node.height}px;box-sizing:border-box;background:${style.fill};opacity:${style.opacity};border:${style.borderWidth}px ${style.borderStyle} ${style.borderColor};border-radius:${style.borderRadius}px;color:${style.color};font-family:${style.fontFamily};font-size:${style.fontSize}px;font-weight:${style.fontWeight};line-height:${style.lineHeight};letter-spacing:${style.letterSpacing}px;text-align:${style.textAlign};overflow:${layout?.clipContent ? 'hidden' : 'visible'};transform:rotate(${node.rotation}deg);${layoutCss}`;
 }
 
 export function renderStaticHtml(document: DocumentModel, artboardId: string): { html: string; unsupported: string[] } {
   const artboard = document.nodes[artboardId];
-  if (!artboard || artboard.type !== 'artboard') throw new Error(`No artboard has the ID “${artboardId}”.`);
+  if (!artboard || artboard.type !== 'artboard') throw new Error(`No Frame has the ID “${artboardId}”.`);
   const unsupported: string[] = [];
   const renderNode = (nodeId: string): string => {
     const node = document.nodes[nodeId];
@@ -142,14 +170,18 @@ export function renderStaticHtml(document: DocumentModel, artboardId: string): {
       const asset = getAsset(document, node.image?.assetId);
       if (!asset?.dataUrl.startsWith('data:image/')) unsupported.push(`${node.name}: unsupported or missing image asset`);
       const source = asset?.dataUrl.startsWith('data:image/') ? asset.dataUrl : '';
-      return `<img data-node-id="${escapeHtml(node.id)}" src="${escapeHtml(source)}" alt="${escapeHtml(node.image?.alt ?? node.name)}" style="${style};object-fit:fill;"/>${children}`;
+      return `<img data-node-id="${escapeHtml(node.id)}" src="${escapeHtml(source)}" alt="${escapeHtml(node.image?.alt ?? node.name)}" style="${style};object-fit:contain;"/>${children}`;
+    }
+    if (node.type === 'ellipse' || node.type === 'line' || node.type === 'arrow' || node.type === 'polygon' || node.type === 'rectangle') {
+      const shape = renderShape(node, 0, 0).replaceAll('fill-opacity="1"', 'fill-opacity="1"');
+      return `<svg data-node-id="${escapeHtml(node.id)}" data-node-type="${escapeHtml(node.type)}" viewBox="0 0 ${node.width} ${node.height}" style="${style};overflow:visible">${shape}</svg>${children}`;
     }
     const tag = node.type === 'artboard' ? 'main' : 'div';
     return `<${tag} data-node-id="${escapeHtml(node.id)}" data-node-type="${node.type}" style="${style}">${children}</${tag}>`;
   };
   const children = artboard.childIds.map(renderNode).join('');
   const artboardStyle = inlineCss(artboard, 0, 0, false);
-  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(artboard.name)}</title><style>html,body{margin:0;background:#fff}body{min-width:${artboard.width}px}main[data-node-id]{overflow:hidden;}</style></head><body><main data-node-id="${escapeHtml(artboard.id)}" data-node-type="artboard" style="${artboardStyle}">${children}</main></body></html>`;
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(artboard.name)}</title><style>html,body{margin:0;background:#fff}body{min-width:${artboard.width}px}main[data-node-id]{overflow:hidden;}</style></head><body><main data-node-id="${escapeHtml(artboard.id)}" data-node-type="frame" style="${artboardStyle}">${children}</main></body></html>`;
   return { html, unsupported: [...new Set(unsupported)].slice(0, 12) };
 }
 
@@ -164,7 +196,7 @@ export async function svgToPngBlob(svg: string, width: number, height: number): 
     const image = await new Promise<HTMLImageElement>((resolve, reject) => {
       const loaded = new Image();
       loaded.onload = () => resolve(loaded);
-      loaded.onerror = () => reject(new Error('The artboard contains an image or style the PNG renderer cannot read.'));
+      loaded.onerror = () => reject(new Error('The Frame contains an image or style the PNG renderer cannot read.'));
       loaded.src = url;
     });
     const canvas = document.createElement('canvas');
@@ -181,18 +213,18 @@ export async function svgToPngBlob(svg: string, width: number, height: number): 
 
 export async function prepareArtboardExport(document: DocumentModel, artboardId: string, format: ExportFormat, scale = 1): Promise<PreparedExport> {
   const artboard = document.nodes[artboardId];
-  if (!artboard || artboard.type !== 'artboard') throw new Error(`No artboard has the ID “${artboardId}”.`);
+  if (!artboard || artboard.type !== 'artboard') throw new Error(`No Frame has the ID “${artboardId}”.`);
   const baseName = safeFilename(artboard.name);
   if (format === 'json') {
-    return { blob: new Blob([serializeDocument(document)], { type: 'application/json;charset=utf-8' }), fileName: `${baseName || 'document'}.json`, format, artboardId, unsupported: [] };
+    return { blob: new Blob([serializeDocument(document)], { type: 'application/json;charset=utf-8' }), fileName: `${baseName || 'document'}.json`, format, artboardId, frameId: artboardId, unsupported: [] };
   }
   if (format === 'html') {
     const rendered = renderStaticHtml(document, artboardId);
-    return { blob: new Blob([rendered.html], { type: 'text/html;charset=utf-8' }), fileName: `${baseName}.html`, format, artboardId, width: artboard.width, height: artboard.height, unsupported: rendered.unsupported };
+    return { blob: new Blob([rendered.html], { type: 'text/html;charset=utf-8' }), fileName: `${baseName}.html`, format, artboardId, frameId: artboardId, width: artboard.width, height: artboard.height, unsupported: rendered.unsupported };
   }
   const rendered = renderArtboardSvg(document, artboardId, format === 'png' ? scale : 1);
-  if (format === 'svg') return { blob: svgBlob(rendered.svg), fileName: `${baseName}.svg`, format, artboardId, width: rendered.width, height: rendered.height, unsupported: rendered.unsupported };
-  return { blob: await svgToPngBlob(rendered.svg, rendered.width, rendered.height), fileName: `${baseName}-${scale}x.png`, format, artboardId, width: rendered.width, height: rendered.height, unsupported: rendered.unsupported };
+  if (format === 'svg') return { blob: svgBlob(rendered.svg), fileName: `${baseName}.svg`, format, artboardId, frameId: artboardId, width: rendered.width, height: rendered.height, unsupported: rendered.unsupported };
+  return { blob: await svgToPngBlob(rendered.svg, rendered.width, rendered.height), fileName: `${baseName}-${scale}x.png`, format, artboardId, frameId: artboardId, width: rendered.width, height: rendered.height, unsupported: rendered.unsupported };
 }
 
 export function downloadBlob(blob: Blob, fileName: string): void {

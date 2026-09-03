@@ -1,4 +1,20 @@
-export type NodeType = 'artboard' | 'frame' | 'text' | 'rectangle' | 'image';
+export type ShapeKind = 'rectangle' | 'ellipse' | 'line' | 'arrow' | 'polygon';
+export type NodeType = 'artboard' | 'frame' | 'text' | ShapeKind | 'image';
+
+export type SemanticTarget = {
+  fileId?: string;
+  fileName?: string;
+  pageId?: string;
+  frameId?: string;
+  frameName?: string;
+  // Kept for the internal migration boundary; public tool schemas use frameId/frameName.
+  artboardId?: string;
+  artboardName?: string;
+  name?: string;
+  type?: NodeType;
+  content?: string;
+  bindingKey?: string;
+};
 
 export type LayoutMode = 'free' | 'flex-row' | 'flex-column';
 export type AlignItems = 'start' | 'center' | 'end' | 'stretch';
@@ -27,6 +43,7 @@ export type NodeStyle = {
   opacity: number;
   borderColor: string;
   borderWidth: number;
+  borderStyle: 'solid' | 'dashed' | 'dotted';
   borderRadius: number;
   color: string;
   fontFamily: string;
@@ -79,6 +96,9 @@ export type DesignNode = {
   rotation: number;
   style: NodeStyle;
   layout?: LayoutStyle;
+  shape?: {
+    sides?: number;
+  };
   content?: string;
   image?: ImageMetadata;
   hidden: boolean;
@@ -101,7 +121,16 @@ export type ImageAsset = {
   naturalHeight: number;
   aspectRatio: number;
   palette: string[];
+  sourceLabel?: string;
   createdAt: string;
+};
+
+export type EaselFile = {
+  id: string;
+  name: string;
+  document: DocumentModel;
+  updatedAt: string;
+  open: boolean;
 };
 
 export type SelectionState = {
@@ -125,6 +154,7 @@ export type DocumentModel = {
 export type PanelsState = {
   leftOpen: boolean;
   rightOpen: boolean;
+  leftWidth: number;
 };
 
 export type HistorySnapshot = {
@@ -144,6 +174,7 @@ export type LastAction = {
   changedIds: string[];
   skippedIds: string[];
   failedIds: string[];
+  result?: Record<string, unknown>;
   at: number;
 };
 
@@ -156,7 +187,7 @@ export type FocusSession = {
 };
 
 export type PreviewState = {
-  kind: 'image' | 'artboard';
+  kind: 'image' | 'frame';
   title: string;
   imageUrl: string;
   artboardId?: string;
@@ -168,6 +199,8 @@ export type PreviewState = {
 
 export type EditorState = {
   document: DocumentModel;
+  files: EaselFile[];
+  activeFileId: string;
   theme: ThemeMode;
   panels: PanelsState;
   history: HistoryEntry[];
@@ -182,6 +215,7 @@ export type MutationOutcome = {
   changedIds: string[];
   skippedIds: string[];
   failedIds?: string[];
+  result?: Record<string, unknown>;
   message: string;
 };
 
@@ -192,16 +226,16 @@ export type CommandResult = {
 };
 
 export type ArtboardPreset =
-  | 'website-desktop'
+  | 'website'
   | 'website-mobile'
-  | 'poster-portrait'
-  | 'a4-portrait';
+  | 'graphic'
+  | 'custom';
 
 export const ARTBOARD_PRESETS: Record<ArtboardPreset, Size> = {
-  'website-desktop': { width: 1440, height: 900 },
+  website: { width: 880, height: 600 },
   'website-mobile': { width: 390, height: 844 },
-  'poster-portrait': { width: 1080, height: 1350 },
-  'a4-portrait': { width: 794, height: 1123 },
+  graphic: { width: 480, height: 600 },
+  custom: { width: 880, height: 600 },
 };
 
 export type ExportFormat = 'png' | 'svg' | 'html' | 'json';
@@ -217,6 +251,7 @@ export type ToolResult = {
     code: string;
     message: string;
     affectedIds?: string[];
+    details?: Record<string, unknown>;
   };
   [key: string]: unknown;
 };
@@ -237,6 +272,7 @@ export type ElementSpec = {
   content?: string;
   style?: Partial<NodeStyle>;
   layout?: Partial<LayoutStyle>;
+  shape?: { sides?: number };
   image?: Partial<ImageMetadata> & { assetId: string };
   hidden?: boolean;
   locked?: boolean;
@@ -244,8 +280,7 @@ export type ElementSpec = {
   children?: ElementSpec[];
 };
 
-export type ElementPatch = {
-  id: string;
+type ElementPatchFields = {
   name?: string;
   x?: number;
   y?: number;
@@ -255,8 +290,14 @@ export type ElementPatch = {
   content?: string;
   style?: Partial<NodeStyle>;
   layout?: Partial<LayoutStyle>;
+  shape?: { sides?: number };
   image?: Partial<ImageMetadata> & { assetId?: string };
   parentId?: string | null;
   hidden?: boolean;
   locked?: boolean;
 };
+
+export type ElementPatch = ElementPatchFields & (
+  { id: string; target?: never }
+  | { id?: never; target: SemanticTarget }
+);

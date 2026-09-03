@@ -1,0 +1,20 @@
+const READING_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="720" height="520" viewBox="0 0 720 520" role="img" aria-labelledby="title desc">
+  <title id="title">A quiet stack of books</title>
+  <desc id="desc">An original geometric illustration of stacked books beside a reading lamp.</desc>
+  <rect width="720" height="520" rx="36" fill="#ece5d9"/>
+  <circle cx="560" cy="150" r="78" fill="#d7c9b6"/>
+  <path d="M530 176h60l23 156h-106z" fill="#ad8c6d"/>
+  <path d="M510 165h100l-22-60h-56z" fill="#171717"/>
+  <path d="M270 372h270l-22 38H248z" fill="#171717"/>
+  <rect x="180" y="320" width="320" height="58" rx="8" fill="#5d7381" transform="rotate(-4 180 320)"/>
+  <rect x="205" y="260" width="280" height="58" rx="8" fill="#c98968" transform="rotate(5 205 260)"/>
+  <rect x="150" y="202" width="310" height="58" rx="8" fill="#7d8b67" transform="rotate(-2 150 202)"/>
+  <path d="M180 216h174" stroke="#f7f3ec" stroke-width="5" stroke-linecap="round" opacity=".8"/>
+  <path d="M235 279h142" stroke="#f7f3ec" stroke-width="5" stroke-linecap="round" opacity=".8"/>
+  <path d="M220 338h164" stroke="#f7f3ec" stroke-width="5" stroke-linecap="round" opacity=".8"/>
+  <circle cx="111" cy="116" r="14" fill="#c98968"/>
+  <circle cx="111" cy="116" r="34" fill="none" stroke="#c98968" stroke-width="2" opacity=".55"/>
+</svg>`;
+
+export const STARTER_READING_ASSET_ID = 'asset_book_club_reading';
+export const STARTER_READING_DATA_URL = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(READING_SVG)}`;
