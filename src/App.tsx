@@ -33,21 +33,16 @@ import {
   Download,
   Eye,
   EyeOff,
-  FilePlus2,
-  FolderOpen,
   Frame,
   Hand,
   Image as ImageIcon,
-  Keyboard,
   Layers3,
   Lock,
-  MoreHorizontal,
   PanelLeft,
   PanelLeftClose,
   Palette,
   Plus,
   Redo2,
-  RotateCw,
   Save,
   Scan,
   SendToBack,
@@ -87,7 +82,7 @@ import {
   nowIso,
 } from './model';
 import { downloadBlob, prepareArtboardExport, snapshotId } from './exports';
-import { deserializeDocument, loadEditorState, saveEditorState } from './persistence';
+import { loadEditorState, saveEditorState } from './persistence';
 import { registerWebMCPTools } from './webmcp';
 import type {
   AlignItems,
@@ -240,6 +235,30 @@ function getLocalPreviewRect(document: DocumentModel, id: string, preview: Recor
   return { x: parentPosition.x + transform.x, y: parentPosition.y + transform.y, width: transform.width, height: transform.height, rotation: transform.rotation };
 }
 
+function measureTextBoxHeight(node: DesignNode, width: number, content = node.content ?? ''): number {
+  if (node.type !== 'text' || typeof window === 'undefined' || !window.document.body) return node.height;
+  const measure = window.document.createElement('div');
+  const border = node.style.borderWidth * 2;
+  measure.textContent = content || ' ';
+  measure.style.position = 'fixed';
+  measure.style.left = '-100000px';
+  measure.style.top = '0';
+  measure.style.width = `${Math.max(1, width - border)}px`;
+  measure.style.fontFamily = node.style.fontFamily;
+  measure.style.fontSize = `${node.style.fontSize}px`;
+  measure.style.fontWeight = String(node.style.fontWeight);
+  measure.style.lineHeight = String(node.style.lineHeight);
+  measure.style.letterSpacing = `${node.style.letterSpacing}px`;
+  measure.style.whiteSpace = 'pre-wrap';
+  measure.style.overflowWrap = 'anywhere';
+  measure.style.wordBreak = 'break-word';
+  measure.style.boxSizing = 'border-box';
+  window.document.body.appendChild(measure);
+  const height = Math.ceil(measure.getBoundingClientRect().height) + border;
+  measure.remove();
+  return Math.max(Math.ceil(node.style.fontSize * node.style.lineHeight) + border, height);
+}
+
 function computeFitViewport(document: DocumentModel, ids: string[], stageWidth: number, stageHeight: number, preferredZoom = 1): Viewport | null {
   const bounds = getBoundingRect(document, ids);
   if (!bounds || stageWidth < 1 || stageHeight < 1) return null;
@@ -326,8 +345,6 @@ export default function App() {
   const stateRef = useRef(state);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const [tool, setTool] = useState<ToolName>('select');
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [filesMenuOpen, setFilesMenuOpen] = useState(false);
   const [shapeMenuOpen, setShapeMenuOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [exportFormat, setExportFormat] = useState<ExportFormat>('png');
@@ -351,7 +368,6 @@ export default function App() {
   const revealTokenRef = useRef(0);
   const clipboardIdsRef = useRef<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const importInputRef = useRef<HTMLInputElement | null>(null);
   const previewUrlRef = useRef<string | null>(null);
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const panelResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
@@ -428,8 +444,6 @@ export default function App() {
   }, [commit, markPulse, notify]);
 
   const currentDocument = state.document;
-  const activeFile = state.files.find((file) => file.id === state.activeFileId) ?? { id: state.activeFileId, name: currentDocument.name, document: currentDocument, updatedAt: currentDocument.updatedAt, open: true };
-  const openFiles = useMemo(() => state.files.filter((file) => file.open || file.id === state.activeFileId), [state.activeFileId, state.files]);
   const activePage = getPage(currentDocument);
   const activeArtboards = useMemo(() => getArtboards(currentDocument), [currentDocument]);
   const assets = useMemo(() => Object.values(currentDocument.assets).sort((a, b) => a.originalName.localeCompare(b.originalName)), [currentDocument.assets]);
@@ -869,14 +883,16 @@ export default function App() {
         previewNext(next);
       } else if (drag.kind === 'resize') {
         const base = drag.base;
+        const resizeNode = stateRef.current.document.nodes[drag.nodeId];
         let x = base.x;
         let y = base.y;
         let width = base.width;
         let height = base.height;
         if (drag.corner.includes('e')) width = Math.max(20, base.width + delta.x);
-        if (drag.corner.includes('s')) height = Math.max(20, base.height + delta.y);
         if (drag.corner.includes('w')) { width = Math.max(20, base.width - delta.x); x = base.x + base.width - width; }
-        if (drag.corner.includes('n')) { height = Math.max(20, base.height - delta.y); y = base.y + base.height - height; }
+        if (drag.corner.includes('s')) height = Math.max(20, base.height + delta.y);
+        if (resizeNode?.type === 'text' && width !== base.width) height = measureTextBoxHeight(resizeNode, width);
+        if (drag.corner.includes('n')) y = base.y + base.height - height;
         previewNext({ [drag.nodeId]: { ...base, x, y, width, height } });
       } else if (drag.kind === 'rotate') {
         const point = screenToWorld(event.clientX, event.clientY);
@@ -1059,7 +1075,8 @@ export default function App() {
 
   const commitText = useCallback((id: string, content: string) => {
     setEditingNodeId(null);
-    runCommand({ type: 'update-elements', updates: [{ id, content }], source: 'human' }, 'success');
+    const node = stateRef.current.document.nodes[id];
+    runCommand({ type: 'update-elements', updates: [{ id, content, ...(node?.type === 'text' ? { height: measureTextBoxHeight(node, node.width, content) } : {}) }], source: 'human' }, 'success');
   }, [runCommand]);
 
   const switchFile = useCallback((fileId: string) => {
@@ -1070,8 +1087,6 @@ export default function App() {
       return;
     }
     commit({ ...current, activeFileId: file.id, document: deepClone(file.document), files: current.files.map((candidate) => candidate.id === file.id ? { ...candidate, open: true } : candidate), history: [], future: [], lastAction: null, focus: null, preview: null });
-    setFilesMenuOpen(false);
-    setMenuOpen(false);
     setExportOpen(false);
     setSelectedAssetId(null);
   }, [commit, notify]);
@@ -1100,38 +1115,7 @@ export default function App() {
     const fileId = createId('file');
     const file = { id: fileId, name, document: deepClone(document), updatedAt: document.updatedAt, open: true };
     commit({ ...current, activeFileId: fileId, document, files: [...current.files, file], history: [], future: [], lastAction: null, focus: null, preview: null });
-    setFilesMenuOpen(false);
     notify(`Created ${name}`, 'success');
-  }, [commit, notify]);
-
-  const closeFile = useCallback((fileId: string) => {
-    const current = syncActiveFile(stateRef.current);
-    const target = current.files.find((file) => file.id === fileId);
-    if (!target) return;
-    const remaining = current.files.filter((file) => file.id !== fileId && file.open);
-    if (!remaining.length) {
-      notify('Keep one File open to continue working.', 'warning');
-      return;
-    }
-    const nextFiles = current.files.map((file) => file.id === fileId ? { ...file, open: false } : file);
-    if (fileId !== current.activeFileId) {
-      commit({ ...current, files: nextFiles });
-      return;
-    }
-    const nextFile = remaining[remaining.length - 1];
-    commit({ ...current, activeFileId: nextFile.id, document: deepClone(nextFile.document), files: nextFiles.map((file) => file.id === nextFile.id ? { ...file, open: true } : file), history: [], future: [], lastAction: null, focus: null, preview: null });
-    setSelectedAssetId(null);
-  }, [commit, notify]);
-
-  const resetDemo = useCallback(() => {
-    if (!window.confirm('Reset the active File to the Book Club demo?')) return;
-    const current = syncActiveFile(stateRef.current);
-    const document = createInitialDocument();
-    document.id = current.activeFileId;
-    const nextFiles = current.files.map((file) => file.id === current.activeFileId ? { ...file, name: 'Book Club', document: deepClone(document), updatedAt: document.updatedAt, open: true } : file);
-    commit({ ...current, document, files: nextFiles, history: [], future: [], lastAction: null, focus: null, preview: null });
-    setFilesMenuOpen(false);
-    notify('Book Club demo restored.', 'success');
   }, [commit, notify]);
 
   useEffect(() => {
@@ -1157,62 +1141,14 @@ export default function App() {
     return () => cleanup?.();
   }, [beginAgentWork, captureForTool, commit, completeAgentWork, exportForTool, focusForInspection, loaded, revealTargets, switchFile]);
 
-  const importJson = useCallback((event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = '';
-    if (!file) return;
-    void file.text().then((raw) => {
-      try {
-        if (!window.confirm('Replace the current File with this JSON file?')) return;
-        const document = deserializeDocument(raw);
-        const next = { ...stateRef.current, document, history: [], future: [], focus: null, preview: null, lastAction: null };
-        commit(next);
-        notify('File imported.', 'success');
-      } catch (error) {
-        notify(error instanceof Error ? error.message : 'The JSON file could not be imported.', 'error');
-      }
-    });
-    setMenuOpen(false);
-  }, [commit, notify]);
-
   if (!loaded) return <div className="loading-shell" aria-label="Loading Easel"><span className="loading-mark" /><span>Easel</span></div>;
 
   return (
     <div className={`app-shell theme-${state.theme}`} data-theme={state.theme}>
-      <header className="topbar">
-        <div className="topbar-left">
-          <IconButton label={state.panels.leftOpen ? 'Hide Layers panel' : 'Show Layers panel'} active={state.panels.leftOpen} onClick={() => commit({ ...stateRef.current, panels: { ...stateRef.current.panels, leftOpen: !stateRef.current.panels.leftOpen } })}>{state.panels.leftOpen ? <PanelLeftClose size={17} /> : <PanelLeft size={17} />}</IconButton>
-          <button className="brand-mark" type="button" title="Easel" aria-label="Easel"><span className="brand-glyph" />Easel</button>
-          <span className="topbar-divider" />
-          <div className="file-controls">
-            <button className={`files-trigger ${filesMenuOpen ? 'is-active' : ''}`} type="button" onClick={() => { setFilesMenuOpen((open) => !open); setMenuOpen(false); setExportOpen(false); }}><FolderOpen size={15} /><span>Files</span><ChevronDown size={13} /></button>
-            {filesMenuOpen && <FileMenu files={state.files} activeFileId={state.activeFileId} onSwitch={switchFile} onNew={createNewFile} onRename={renameActiveFile} onReset={resetDemo} onImport={() => importInputRef.current?.click()} />}
-            <div className="file-tabs" role="tablist" aria-label="Open Files">
-              {openFiles.map((file) => <div className={`file-tab ${file.id === state.activeFileId ? 'is-active' : ''}`} key={file.id} role="presentation">
-                <button className="file-tab-main" type="button" role="tab" aria-selected={file.id === state.activeFileId} onClick={() => switchFile(file.id)} onDoubleClick={() => { if (file.id !== state.activeFileId) switchFile(file.id); renameActiveFile(); }} title={file.name}><span className="file-tab-dot" />{file.name}</button>
-                <button className="file-tab-close" type="button" aria-label={`Close ${file.name}`} title={`Close ${file.name}`} onClick={() => closeFile(file.id)}><X size={12} /></button>
-              </div>)}
-            </div>
-            <button className="new-file-button" type="button" onClick={createNewFile}><Plus size={14} /><span>New File</span></button>
-          </div>
-        </div>
-        <div className="topbar-right">
-          <div className="history-actions" aria-label="History">
-            <IconButton label="Undo" disabled={!state.history.length} onClick={() => runCommand({ type: 'undo' })}><Undo2 size={16} /></IconButton>
-            <IconButton label="Redo" disabled={!state.future.length} onClick={() => runCommand({ type: 'redo' })}><Redo2 size={16} /></IconButton>
-          </div>
-          <button className="export-top-button" type="button" onClick={() => { setExportIds([activeArtboards[0]?.id].filter((id): id is string => Boolean(id))); setExportOpen((open) => !open); setMenuOpen(false); }}><Download size={15} />Export</button>
-          <div className="menu-anchor">
-            <IconButton label="More" active={menuOpen} onClick={() => { setMenuOpen((open) => !open); setExportOpen(false); }}><MoreHorizontal size={18} /></IconButton>
-            {menuOpen && <MoreMenu theme={state.theme} onClose={() => setMenuOpen(false)} onPreview={() => { setMenuOpen(false); if (activeArtboards[0]) void captureForTool(activeArtboards[0].id, 1); }} onTheme={(theme) => { commit({ ...stateRef.current, theme }); setMenuOpen(false); }} onImport={() => importInputRef.current?.click()} />}
-          </div>
-        </div>
-        {exportOpen && <ExportPopover artboards={activeArtboards} selectedIds={exportIds} format={exportFormat} scale={exportScale} onFormat={setExportFormat} onScale={setExportScale} onToggle={(id) => setExportIds((ids) => ids.includes(id) ? ids.filter((candidate) => candidate !== id) : [...ids, id])} onClose={() => setExportOpen(false)} onExport={() => { if (!exportIds.length) { notify('Choose at least one Frame.', 'warning'); return; } void exportForTool(exportIds, exportFormat, exportScale).then(() => setExportOpen(false)).catch((error) => notify(error instanceof Error ? error.message : 'Export failed.', 'error')); }} />}
-      </header>
-
       <div className="workspace" ref={workspaceRef}>
-        {state.panels.leftOpen && <LeftPanel width={leftPanelWidth} resizeActive={panelResizing} resizeMin={leftPanelBounds.minimum} resizeMax={leftPanelBounds.maximum} onResizeStart={startLeftPanelResize} onResizeKeyDown={handleLeftPanelResizeKeyDown} fileName={activeFile.name} document={currentDocument} designs={activeArtboards} activeDesign={activeDesign} assets={assets} selectedAssetId={selectedAssetId} onSelectAsset={setSelectedAssetId} onUploadAssets={() => fileInputRef.current?.click()} onPasteAsset={pasteAssetFromClipboard} selectedIds={currentDocument.selection.ids} workingIds={agentWorkingIds} pulseIds={pulseIds} revealRequest={layerRevealRequest} onSelect={selectNode} onSelectDesign={selectDesign} onToggleHidden={(id) => runCommand({ type: 'toggle-hidden', ids: [id], source: 'human' })} onToggleLocked={(id) => runCommand({ type: 'toggle-locked', ids: [id], source: 'human' })} onReorderLayer={(id, beforeId) => runCommand({ type: 'reorder-layer', id, beforeId, source: 'human' }, 'success')} onCollapse={() => commit({ ...stateRef.current, panels: { ...stateRef.current.panels, leftOpen: false } })} />}
-        <ToolRail tool={tool} onTool={(nextTool) => { setTool(nextTool); if (nextTool !== 'rectangle' && nextTool !== 'ellipse' && nextTool !== 'line' && nextTool !== 'arrow' && nextTool !== 'polygon') setShapeMenuOpen(false); }} shapeMenuOpen={shapeMenuOpen} onShapeMenu={() => setShapeMenuOpen((open) => !open)} onFit={fitSelection} leftOpen={state.panels.leftOpen} />
+        {!state.panels.leftOpen && <button className="sidebar-reopen" type="button" aria-label="Show Layers panel" title="Show Layers panel" onClick={() => commit({ ...stateRef.current, panels: { ...stateRef.current.panels, leftOpen: true } })}><PanelLeft size={16} /></button>}
+        {state.panels.leftOpen && <LeftPanel width={leftPanelWidth} resizeActive={panelResizing} resizeMin={leftPanelBounds.minimum} resizeMax={leftPanelBounds.maximum} onResizeStart={startLeftPanelResize} onResizeKeyDown={handleLeftPanelResizeKeyDown} files={state.files} activeFileId={state.activeFileId} onSwitchFile={switchFile} onNewFile={createNewFile} onRenameFile={renameActiveFile} theme={state.theme} onTheme={(theme) => commit({ ...stateRef.current, theme })} document={currentDocument} designs={activeArtboards} activeDesign={activeDesign} assets={assets} selectedAssetId={selectedAssetId} onSelectAsset={setSelectedAssetId} onUploadAssets={() => fileInputRef.current?.click()} onPasteAsset={pasteAssetFromClipboard} selectedIds={currentDocument.selection.ids} workingIds={agentWorkingIds} pulseIds={pulseIds} revealRequest={layerRevealRequest} onSelect={selectNode} onSelectDesign={selectDesign} onToggleHidden={(id) => runCommand({ type: 'toggle-hidden', ids: [id], source: 'human' })} onToggleLocked={(id) => runCommand({ type: 'toggle-locked', ids: [id], source: 'human' })} onReorderLayer={(id, beforeId) => runCommand({ type: 'reorder-layer', id, beforeId, source: 'human' }, 'success')} onCollapse={() => commit({ ...stateRef.current, panels: { ...stateRef.current.panels, leftOpen: false } })} />}
+        <ToolRail tool={tool} onTool={(nextTool) => { setTool(nextTool); if (nextTool !== 'rectangle' && nextTool !== 'ellipse' && nextTool !== 'line' && nextTool !== 'arrow' && nextTool !== 'polygon') setShapeMenuOpen(false); }} shapeMenuOpen={shapeMenuOpen} onShapeMenu={() => setShapeMenuOpen((open) => !open)} onFit={fitSelection} leftOpen={state.panels.leftOpen} canUndo={Boolean(state.history.length)} canRedo={Boolean(state.future.length)} onUndo={() => runCommand({ type: 'undo' })} onRedo={() => runCommand({ type: 'redo' })} />
         <main className="canvas-main">
           <div className={`canvas-stage ${dragging ? 'is-dragging' : ''}`} ref={stageRef} onPointerDown={handleStagePointerDown} onWheel={handleWheel} onDrop={handleStageDrop} onDragOver={handleStageDragOver} tabIndex={0} aria-label="Canvas">
             {tool === 'add-frame' && <FrameQuickCreate onCreate={(input) => { const dimensions = stageRef.current?.getBoundingClientRect(); const center = dimensions ? screenToWorld(dimensions.left + dimensions.width / 2, dimensions.top + dimensions.height / 2) : { x: 600, y: 400 }; const size = input.preset === 'website-mobile' ? { width: 390, height: 844 } : input.preset === 'graphic' ? { width: 480, height: 600 } : { width: 880, height: 600 }; const position = { x: center.x - (input.width ?? size.width) / 2, y: center.y - (input.height ?? size.height) / 2 }; runCommand({ type: 'create-artboard', ...input, position, source: 'human' }, 'success'); setTool('select'); }} />}
@@ -1225,11 +1161,10 @@ export default function App() {
             {primaryNode && !state.panels.rightOpen && <button className="inspector-reopen" type="button" onClick={() => commit({ ...stateRef.current, panels: { ...stateRef.current.panels, rightOpen: true } })}>Show Inspector</button>}
           </div>
         </main>
-        {state.panels.rightOpen && primaryNode && <Inspector node={primaryNode} selectedCount={selectedNodes.length} document={currentDocument} onClose={() => commit({ ...stateRef.current, panels: { ...stateRef.current.panels, rightOpen: false } })} onExport={() => { const frameId = primaryNode.type === 'artboard' ? primaryNode.id : selectedDesign?.id; if (frameId) { setExportIds([frameId]); setExportOpen(true); } }} onUpdate={(updates) => runCommand({ type: 'update-elements', updates, source: 'human' }, 'success')} onToggleHidden={() => runCommand({ type: 'toggle-hidden', ids: selectedNodes.map((node) => node.id), source: 'human' })} onToggleLocked={() => runCommand({ type: 'toggle-locked', ids: selectedNodes.map((node) => node.id), source: 'human' })} onDelete={() => runCommand({ type: 'delete-elements', ids: selectedNodes.map((node) => node.id), source: 'human' })} onDuplicate={() => runCommand({ type: 'duplicate-elements', ids: selectedNodes.map((node) => node.id), source: 'human' }, 'success')} onAlign={(alignment) => runCommand({ type: 'align-elements', ids: selectedNodes.map((node) => node.id), alignment, source: 'human' })} onDistribute={(axis) => runCommand({ type: 'distribute-elements', ids: selectedNodes.map((node) => node.id), axis, source: 'human' })} onGroup={() => runCommand({ type: 'group-elements', ids: selectedNodes.map((node) => node.id), source: 'human' })} onUngroup={() => runCommand({ type: 'ungroup-elements', ids: selectedNodes.map((node) => node.id), source: 'human' })} onReorder={(direction) => runCommand({ type: 'reorder-elements', ids: selectedNodes.map((node) => node.id), direction, source: 'human' })} onReapply={() => { if (!primaryNode.binding?.sharedValue) return; runCommand({ type: 'apply-context', values: [{ key: primaryNode.binding.key, value: primaryNode.type === 'image' ? { assetId: primaryNode.binding.sharedValue } : primaryNode.binding.sharedValue }], source: 'human' }, 'success'); }} onUnbind={() => runCommand({ type: 'unbind-context', ids: [primaryNode.id], source: 'human' })} />}
+        {state.panels.rightOpen && primaryNode && <Inspector node={primaryNode} selectedCount={selectedNodes.length} document={currentDocument} frameId={selectedDesign?.id} exportOpen={exportOpen} exportArtboards={activeArtboards} exportIds={exportIds} exportFormat={exportFormat} exportScale={exportScale} onExportFormat={setExportFormat} onExportScale={setExportScale} onToggleExportFrame={(id) => setExportIds((ids) => ids.includes(id) ? ids.filter((candidate) => candidate !== id) : [...ids, id])} onCloseExport={() => setExportOpen(false)} onPrepareExport={() => { if (!exportIds.length) { notify('Choose at least one Frame.', 'warning'); return; } void exportForTool(exportIds, exportFormat, exportScale).then(() => setExportOpen(false)).catch((error) => notify(error instanceof Error ? error.message : 'Export failed.', 'error')); }} onClose={() => commit({ ...stateRef.current, panels: { ...stateRef.current.panels, rightOpen: false } })} onPreview={() => { if (selectedDesign) void captureForTool(selectedDesign.id, 1); else notify('Select a Frame or a Layer inside one first.', 'warning'); }} onExport={() => { if (selectedDesign) { setExportIds([selectedDesign.id]); setExportOpen(true); } else notify('Select a Frame or a Layer inside one first.', 'warning'); }} onUpdate={(updates) => runCommand({ type: 'update-elements', updates, source: 'human' }, 'success')} onToggleLocked={() => runCommand({ type: 'toggle-locked', ids: selectedNodes.map((node) => node.id), source: 'human' })} onDelete={() => runCommand({ type: 'delete-elements', ids: selectedNodes.map((node) => node.id), source: 'human' })} onDuplicate={() => runCommand({ type: 'duplicate-elements', ids: selectedNodes.map((node) => node.id), source: 'human' }, 'success')} onAlign={(alignment) => runCommand({ type: 'align-elements', ids: selectedNodes.map((node) => node.id), alignment, source: 'human' })} onDistribute={(axis) => runCommand({ type: 'distribute-elements', ids: selectedNodes.map((node) => node.id), axis, source: 'human' })} onGroup={() => runCommand({ type: 'group-elements', ids: selectedNodes.map((node) => node.id), source: 'human' })} onUngroup={() => runCommand({ type: 'ungroup-elements', ids: selectedNodes.map((node) => node.id), source: 'human' })} onReorder={(direction) => runCommand({ type: 'reorder-elements', ids: selectedNodes.map((node) => node.id), direction, source: 'human' })} onReapply={() => { if (!primaryNode.binding?.sharedValue) return; runCommand({ type: 'apply-context', values: [{ key: primaryNode.binding.key, value: primaryNode.type === 'image' ? { assetId: primaryNode.binding.sharedValue } : primaryNode.binding.sharedValue }], source: 'human' }, 'success'); }} onUnbind={() => runCommand({ type: 'unbind-context', ids: [primaryNode.id], source: 'human' })} />}
       </div>
 
       <input ref={fileInputRef} className="visually-hidden" type="file" accept="image/*" multiple onChange={handleFileSelection} />
-      <input ref={importInputRef} className="visually-hidden" type="file" accept="application/json,.json" onChange={importJson} />
       {toast && <Toast state={toast} />}
       {state.preview && <PreviewOverlay preview={state.preview} onClose={closePreview} onDownload={() => { const link = document.createElement('a'); link.href = state.preview?.imageUrl ?? ''; link.download = `${state.preview?.title ?? 'frame'}-${state.preview?.scale ?? 1}x.png`; link.click(); }} />}
     </div>
@@ -1390,7 +1325,7 @@ function SelectionLayer({ document, selectedIds, preview, onResize, onRotate }: 
   </div>;
 }
 
-function ToolRail({ tool, onTool, shapeMenuOpen, onShapeMenu, onFit, leftOpen }: { tool: ToolName; onTool: (tool: ToolName) => void; shapeMenuOpen: boolean; onShapeMenu: () => void; onFit: () => void; leftOpen: boolean }) {
+function ToolRail({ tool, onTool, shapeMenuOpen, onShapeMenu, onFit, leftOpen, canUndo, canRedo, onUndo, onRedo }: { tool: ToolName; onTool: (tool: ToolName) => void; shapeMenuOpen: boolean; onShapeMenu: () => void; onFit: () => void; leftOpen: boolean; canUndo: boolean; canRedo: boolean; onUndo: () => void; onRedo: () => void }) {
   const tools: Array<{ id: ToolName; icon: ReactNode }> = [
     { id: 'select', icon: <Scan size={18} /> },
     { id: 'pan', icon: <Hand size={18} /> },
@@ -1413,6 +1348,8 @@ function ToolRail({ tool, onTool, shapeMenuOpen, onShapeMenu, onFit, leftOpen }:
     <span className="tool-divider" />
     <span className="tool-rail-spacer" />
     <button type="button" className="tool-button" aria-label="Fit Canvas" title="Fit Canvas" onClick={onFit}><Scan size={17} /></button>
+    <span className="tool-divider rail-history-divider" />
+    <div className="rail-history" aria-label="History"><IconButton label="Undo" disabled={!canUndo} onClick={onUndo}><Undo2 size={16} /></IconButton><IconButton label="Redo" disabled={!canRedo} onClick={onRedo}><Redo2 size={16} /></IconButton></div>
   </aside>;
 }
 
@@ -1430,7 +1367,13 @@ type LeftPanelProps = {
   resizeMax: number;
   onResizeStart: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onResizeKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
-  fileName: string;
+  files: EditorState['files'];
+  activeFileId: string;
+  onSwitchFile: (id: string) => void;
+  onNewFile: () => void;
+  onRenameFile: () => void;
+  theme: ThemeMode;
+  onTheme: (theme: ThemeMode) => void;
   document: DocumentModel;
   designs: DesignNode[];
   activeDesign?: DesignNode;
@@ -1451,7 +1394,7 @@ type LeftPanelProps = {
   onCollapse: () => void;
 };
 
-function LeftPanel({ width, resizeActive, resizeMin, resizeMax, onResizeStart, onResizeKeyDown, fileName, document, designs, activeDesign, assets, selectedAssetId, onSelectAsset, onUploadAssets, onPasteAsset, selectedIds, workingIds, pulseIds, revealRequest, onSelect, onSelectDesign, onToggleHidden, onToggleLocked, onReorderLayer, onCollapse }: LeftPanelProps) {
+function LeftPanel({ width, resizeActive, resizeMin, resizeMax, onResizeStart, onResizeKeyDown, files, activeFileId, onSwitchFile, onNewFile, onRenameFile, theme, onTheme, document, designs, activeDesign, assets, selectedAssetId, onSelectAsset, onUploadAssets, onPasteAsset, selectedIds, workingIds, pulseIds, revealRequest, onSelect, onSelectDesign, onToggleHidden, onToggleLocked, onReorderLayer, onCollapse }: LeftPanelProps) {
   const initialExpanded = designs.flatMap((design) => getDescendantIds(document, design.id)).filter((id) => document.nodes[id]?.type === 'frame');
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set(initialExpanded));
   const [panelTab, setPanelTab] = useState<'layers' | 'assets'>('layers');
@@ -1521,8 +1464,18 @@ function LeftPanel({ width, resizeActive, resizeMin, resizeMax, onResizeStart, o
   const visibleAssets = assets.filter((asset) => !assetSearch.trim() || asset.originalName.toLowerCase().includes(assetSearch.trim().toLowerCase()) || (asset.sourceLabel ?? '').toLowerCase().includes(assetSearch.trim().toLowerCase()));
   const selectedAsset = selectedAssetId ? assets.find((asset) => asset.id === selectedAssetId) : undefined;
 
+  const handleFileChange = (event: ChangeEvent<{ value: string }>) => {
+    const value = event.target.value;
+    if (value === '__new_file__') onNewFile();
+    else if (value === '__rename_file__') onRenameFile();
+    else onSwitchFile(value);
+  };
+
   return <aside className="left-panel" style={{ width, minWidth: width }}>
-    <div className="panel-heading"><div><span className="panel-overline">Easel File</span><h2>{fileName}</h2></div><IconButton label="Hide Layers panel" onClick={onCollapse}><PanelLeft size={17} /></IconButton></div>
+    <div className="panel-heading">
+      <div className="sidebar-brand-row"><IconButton label="Hide Layers panel" onClick={onCollapse}><PanelLeftClose size={17} /></IconButton><button className="brand-mark" type="button" title="Easel" aria-label="Easel"><span className="brand-glyph" />Easel</button></div>
+      <label className="file-selector-field"><span className="panel-overline">Current File</span><select className="file-selector" aria-label="Current File" value={activeFileId} onChange={handleFileChange}>{files.map((file) => <option key={file.id} value={file.id}>{file.name}</option>)}<option value="__new_file__">New File</option><option value="__rename_file__">Rename current File</option></select></label>
+    </div>
     <div className="panel-tabs" role="tablist" aria-label="Panel views"><button type="button" role="tab" aria-selected={panelTab === 'layers'} className={panelTab === 'layers' ? 'is-active' : ''} onClick={() => setPanelTab('layers')}><Layers3 size={14} />Layers</button><button type="button" role="tab" aria-selected={panelTab === 'assets'} className={panelTab === 'assets' ? 'is-active' : ''} onClick={() => setPanelTab('assets')}><ImageIcon size={14} />Assets<span className="tab-count">{assets.length}</span></button></div>
     {panelTab === 'layers' ? <>
       <section className="panel-section frames-section">
@@ -1545,7 +1498,7 @@ function LeftPanel({ width, resizeActive, resizeMin, resizeMax, onResizeStart, o
       <div className="asset-grid">{visibleAssets.map((asset) => <button key={asset.id} type="button" className={`asset-card ${selectedAssetId === asset.id ? 'is-selected' : ''}`} draggable onClick={() => onSelectAsset(asset.id)} onDragStart={(event) => { event.dataTransfer.effectAllowed = 'copy'; event.dataTransfer.setData('application/x-easel-asset', asset.id); event.dataTransfer.setData('text/plain', asset.id); }} title="Select or drag into a Frame"><span className="asset-thumb"><img src={asset.dataUrl} alt="" draggable={false} /></span><span className="asset-name">{asset.originalName}</span><small>{asset.sourceLabel ?? 'Uploaded'}</small></button>)}{!visibleAssets.length && <div className="assets-empty"><ImageIcon size={18} /><span>{assets.length ? 'No Assets match this search.' : 'Upload or paste an image to build this library.'}</span></div>}</div>
       {selectedAsset && <div className="asset-preview"><img src={selectedAsset.dataUrl} alt={selectedAsset.originalName} /><div><strong>{selectedAsset.originalName}</strong><span>{selectedAsset.sourceLabel ?? 'Uploaded'} · {selectedAsset.naturalWidth} × {selectedAsset.naturalHeight}</span><small>Drag into a Frame to place</small></div></div>}
     </section>}
-    <div className="panel-footer"><span>{fileName}</span><span className="revision-label">r{document.revision}</span></div>
+    <div className="panel-footer"><button className="theme-toggle" type="button" onClick={() => onTheme(theme === 'dark' ? 'light' : 'dark')} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}><span className={`theme-dot ${theme === 'dark' ? 'dark-dot' : 'light-dot'}`} /><span>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</span></button><span className="revision-label">r{document.revision}</span></div>
     <div className={`panel-resize-handle ${resizeActive ? 'is-active' : ''}`} role="separator" aria-label="Resize canvas panel" aria-orientation="vertical" aria-valuemin={resizeMin} aria-valuemax={resizeMax} aria-valuenow={width} aria-valuetext={`${width} pixels`} tabIndex={0} onPointerDown={onResizeStart} onKeyDown={onResizeKeyDown} title="Resize canvas panel" />
   </aside>;
 }
@@ -1587,9 +1540,15 @@ type InspectorProps = {
   node: DesignNode;
   selectedCount: number;
   document: DocumentModel;
+  frameId?: string;
+  exportOpen: boolean;
+  exportArtboards: DesignNode[];
+  exportIds: string[];
+  exportFormat: ExportFormat;
+  exportScale: 1 | 2;
   onClose: () => void;
+  onPreview: () => void;
   onUpdate: (updates: ElementPatch[]) => void;
-  onToggleHidden: () => void;
   onToggleLocked: () => void;
   onDelete: () => void;
   onDuplicate: () => void;
@@ -1600,17 +1559,25 @@ type InspectorProps = {
   onReorder: (direction: 'forward' | 'backward' | 'front' | 'back') => void;
   onReapply: () => void;
   onUnbind: () => void;
-  onExport?: () => void;
+  onExport: () => void;
+  onExportFormat: (format: ExportFormat) => void;
+  onExportScale: (scale: 1 | 2) => void;
+  onToggleExportFrame: (id: string) => void;
+  onCloseExport: () => void;
+  onPrepareExport: () => void;
 };
 
-function Inspector({ node, selectedCount, document, onClose, onUpdate, onToggleHidden, onToggleLocked, onDelete, onDuplicate, onAlign, onDistribute, onGroup, onUngroup, onReorder, onReapply, onUnbind, onExport }: InspectorProps) {
+function Inspector({ node, selectedCount, document, frameId, exportOpen, exportArtboards, exportIds, exportFormat, exportScale, onExportFormat, onExportScale, onToggleExportFrame, onCloseExport, onPrepareExport, onClose, onPreview, onUpdate, onToggleLocked, onDelete, onDuplicate, onAlign, onDistribute, onGroup, onUngroup, onReorder, onReapply, onUnbind, onExport }: InspectorProps) {
   const [contentDraft, setContentDraft] = useState(node.content ?? '');
   useEffect(() => setContentDraft(node.content ?? ''), [node.id, node.content]);
-  const commitField = (patch: ElementPatch) => onUpdate([patch]);
+  const commitField = (patch: ElementPatch) => {
+    const textSizePatch = node.type === 'text' && patch.width !== undefined ? { height: measureTextBoxHeight(node, patch.width) } : node.type === 'text' && patch.content !== undefined ? { height: measureTextBoxHeight(node, node.width, patch.content) } : {};
+    onUpdate([{ ...patch, ...textSizePatch }]);
+  };
   const parent = node.parentId ? document.nodes[node.parentId] : undefined;
   const boundDiffers = Boolean(node.binding && (node.type === 'text' ? node.content !== node.binding.sharedValue : node.image?.assetId !== node.binding.sharedValue));
   return <aside className="right-panel inspector-drawer">
-    <div className="inspector-heading"><div><span className="panel-overline">Inspector</span><h2>{selectedCount > 1 ? `${selectedCount} selected` : node.name}</h2></div><div className="inspector-heading-actions"><IconButton label={node.hidden ? 'Show Layer' : 'Hide Layer'} onClick={onToggleHidden}>{node.hidden ? <EyeOff size={16} /> : <Eye size={16} />}</IconButton><IconButton label={node.locked ? 'Unlock Layer' : 'Lock Layer'} onClick={onToggleLocked}>{node.locked ? <Lock size={16} /> : <Unlock size={16} />}</IconButton><IconButton label="Close Inspector" onClick={onClose}><X size={16} /></IconButton></div></div>
+    <div className="inspector-heading"><div><span className="panel-overline">Inspector</span><h2>{selectedCount > 1 ? `${selectedCount} selected` : node.name}</h2></div><div className="inspector-heading-actions"><IconButton label={node.locked ? 'Unlock Layer' : 'Lock Layer'} onClick={onToggleLocked}>{node.locked ? <Lock size={16} /> : <Unlock size={16} />}</IconButton><IconButton label="Close Inspector" onClick={onClose}><X size={16} /></IconButton></div></div>
     <div className="inspector-scroll">
       {selectedCount > 1 ? <MultiInspectorActions onDuplicate={onDuplicate} onDelete={onDelete} onAlign={onAlign} onDistribute={onDistribute} onGroup={onGroup} onReorder={onReorder} /> : <>
         <InspectorSection title="Layout" icon={<Settings2 size={15} />}>
@@ -1646,7 +1613,7 @@ function Inspector({ node, selectedCount, document, onClose, onUpdate, onToggleH
       </>}
       <div className="inspector-bottom-actions"><button type="button" className="secondary-button" onClick={onDuplicate}><Copy size={14} />Duplicate</button>{node.type === 'frame' && node.childIds.length > 0 && <button type="button" className="secondary-button" onClick={onUngroup}><Layers3 size={14} />Ungroup</button>}<button type="button" className="danger-button" onClick={onDelete}><Trash2 size={14} />Delete</button></div>
       {selectedCount === 1 && <div className="stacked-actions"><span className="field-label">Arrange</span><div className="arrange-row"><IconButton label="Send backward" onClick={() => onReorder('backward')}><ArrowDown size={15} /></IconButton><IconButton label="Bring forward" onClick={() => onReorder('forward')}><ArrowUp size={15} /></IconButton><IconButton label="Send to back" onClick={() => onReorder('back')}><SendToBack size={15} /></IconButton><IconButton label="Bring to front" onClick={() => onReorder('front')}><BringToFront size={15} /></IconButton></div></div>}
-      {selectedCount === 1 && <InspectorSection title="Export" icon={<Download size={15} />}><button type="button" className="secondary-button" onClick={onExport}>Export selected Frame</button></InspectorSection>}
+       {selectedCount === 1 && <InspectorSection title="Export" icon={<Download size={15} />}><div className="inspector-export-actions"><button type="button" className="secondary-button" onClick={onPreview} disabled={!frameId}>Preview selected Frame</button><button type="button" className="secondary-button" onClick={onExport} disabled={!frameId}>Export selected Frame</button></div>{exportOpen && <ExportPopover artboards={exportArtboards} selectedIds={exportIds} format={exportFormat} scale={exportScale} onFormat={onExportFormat} onScale={onExportScale} onToggle={onToggleExportFrame} onClose={onCloseExport} onExport={onPrepareExport} />}</InspectorSection>}
       {parent && <div className="parent-hint">Inside {parent.name}</div>}
     </div>
   </aside>;
@@ -1676,31 +1643,6 @@ function ColorField({ label, value, onCommit }: { label: string; value: string; 
   useEffect(() => setDraft(value), [value]);
   const finish = () => { if (/^(#[0-9a-f]{6}|transparent)$/i.test(draft)) onCommit(draft); else setDraft(value); };
   return <div className="color-field"><span className="field-label">{label}</span><span className="color-control"><input aria-label={`${label} color`} type="color" value={hexColor(value)} onChange={(event) => onCommit(event.target.value)} /><input className="color-text" aria-label={`${label} value`} value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={finish} /></span></div>;
-}
-
-function FileMenu({ files, activeFileId, onSwitch, onNew, onRename, onReset, onImport }: { files: EditorState['files']; activeFileId: string; onSwitch: (id: string) => void; onNew: () => void; onRename: () => void; onReset: () => void; onImport: () => void }) {
-  return <div className="files-menu" role="menu">
-    <div className="files-menu-heading"><div><span className="panel-overline">Saved Files</span><strong>{files.length} File{files.length === 1 ? '' : 's'}</strong></div><button type="button" className="small-action" aria-label="New File" title="New File" onClick={onNew}><FilePlus2 size={15} /></button></div>
-    <div className="saved-file-list">{files.map((file) => <button key={file.id} type="button" role="menuitem" className={`saved-file-row ${file.id === activeFileId ? 'is-active' : ''}`} onClick={() => onSwitch(file.id)}><span className="saved-file-status" /> <span><strong>{file.name}</strong><small>{file.open ? 'Open' : 'Saved'} · r{file.document.revision}</small></span>{file.id === activeFileId && <Check size={14} />}</button>)}</div>
-    <div className="menu-separator" />
-    <button type="button" role="menuitem" onClick={onNew}><FilePlus2 size={15} />New File</button>
-    <button type="button" role="menuitem" onClick={onRename}><Type size={15} />Rename active File</button>
-    <button type="button" role="menuitem" onClick={onImport}><FolderOpen size={15} />Import JSON into active File</button>
-    <button type="button" role="menuitem" onClick={onReset}><RotateCw size={15} />Reset demo</button>
-  </div>;
-}
-
-function MoreMenu({ theme, onClose, onPreview, onTheme, onImport }: { theme: ThemeMode; onClose: () => void; onPreview: () => void; onTheme: (theme: ThemeMode) => void; onImport: () => void }) {
-  return <div className="more-menu" role="menu" onMouseLeave={() => undefined}>
-    <button type="button" role="menuitem" onClick={onPreview}><Eye size={15} />Preview current Frame</button>
-    <button type="button" role="menuitem" onClick={onImport}><FolderOpen size={15} />Import JSON File</button>
-    <div className="menu-separator" />
-    <div className="menu-label">Theme</div>
-    <div className="theme-options"><button type="button" className={theme === 'light' ? 'is-selected' : ''} onClick={() => onTheme('light')}><span className="theme-dot light-dot" />Light{theme === 'light' && <Check size={14} />}</button><button type="button" className={theme === 'dark' ? 'is-selected' : ''} onClick={() => onTheme('dark')}><span className="theme-dot dark-dot" />Dark{theme === 'dark' && <Check size={14} />}</button></div>
-    <div className="menu-separator" />
-    <div className="shortcut-hint"><Keyboard size={14} /><span>Ctrl + \ focuses canvas<br />Esc restores panels</span></div>
-    <button type="button" className="menu-dismiss" aria-label="Close menu" onClick={onClose}><X size={14} />Close</button>
-  </div>;
 }
 
 function FrameQuickCreate({ onCreate }: { onCreate: (input: CreateArtboardInput) => void }) {

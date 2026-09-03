@@ -25,8 +25,8 @@ The included `vercel.json` and `public/_headers` add:
 
 ## Product surface
 
-- A calm light/dark shell with a persistent Layers toggle, File tabs, a resizable left panel, vertical tool rail, canvas, and contextual Inspector drawer.
-- Independent saved Files with open/close tabs, exact File switching, rename, New File, local IndexedDB persistence, local-storage fallback, and Reset demo.
+- A calm light/dark shell with a persistent Layers toggle, sidebar File selector, resizable left panel, vertical tool rail, canvas, and contextual Inspector drawer.
+- Independent saved Files with exact File switching, rename, New File, local IndexedDB persistence, and local-storage fallback.
 - Each File contains a Canvas with Website and Graphic Frames, plus nested Frames, text, shapes, images, bindings, visibility, and lock state.
 - Human editing for selection, shift multi-select, pan, zoom, Fit Canvas, frame creation, rectangle/ellipse/line/arrow/polygon/text tools, move, resize, rotate, opacity, stroke, fill, typography, layout, grouping, ordering, hide, lock, copy/paste, and undo/redo.
 - An Assets tab with search, upload, paste, source labels, thumbnails, preview-only selection, and drag placement into an exact Frame. Assets remain local data URLs with bounded metadata and aspect-ratio-preserving placement.
