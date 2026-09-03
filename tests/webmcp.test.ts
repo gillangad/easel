@@ -81,8 +81,8 @@ describe('Site Tool bridge', () => {
     expect(ambiguous.ok).toBe(false);
     expect(ambiguous.error?.code).toBe('AMBIGUOUS_TARGET');
     expect(ambiguous.error?.details).toEqual(expect.objectContaining({ matchCount: 2, candidates: expect.any(Array) }));
-    expect(harness.getState().document.nodes.site_title.content).toContain('After Hours');
-    expect(harness.getState().document.nodes.graphic_title.content).toContain('Quiet books');
+    expect(harness.getState().document.nodes.site_title.content).toContain('Make room');
+    expect(harness.getState().document.nodes.graphic_title.content).toContain('new ideas');
 
     const missing = await harness.bridge.invoke('update_elements', { updates: [{ target: { frameName: 'Website', name: 'Missing Layer', type: 'text' }, content: 'No match' }] });
     expect(missing.ok).toBe(false);
@@ -177,7 +177,7 @@ describe('Site Tool bridge', () => {
     expect(result.file).toEqual(expect.objectContaining({ fileId: 'file_second', fileName: 'Second File' }));
     expect(harness.getState().activeFileId).toBe('file_second');
     expect(harness.getState().document.nodes.site_title.content).toBe('Second copy');
-    expect(harness.getState().files.find((file) => file.id === 'document_easel')?.document.nodes.site_title.content).toContain('After Hours');
+    expect(harness.getState().files.find((file) => file.id === 'document_easel')?.document.nodes.site_title.content).toContain('Make room');
   });
 
   it('applies bindings, validates, exports, and returns recoverable input errors', async () => {

@@ -63,12 +63,23 @@ function validDocument(value: unknown): value is DocumentModel {
 }
 
 function isLegacySeed(document: DocumentModel): boolean {
-  return document.id === 'document_easel'
+  const isOldLaunchSeed = document.id === 'document_easel'
     && document.revision <= 1
     && document.pages[0]?.name === 'Launch set'
     && document.nodes.site_title?.name === 'Event title'
     && Boolean(document.nodes.site_title?.content?.includes('Make room'))
     && !document.nodes.site_tagline;
+  const isOldBookClubSeed = document.id === 'document_easel'
+    && document.revision <= 1
+    && document.name === 'Book Club'
+    && document.pages[0]?.name === 'Canvas'
+    && document.nodes.website_background?.style?.fill === '#3b251c'
+    && document.nodes.graphic_background?.style?.fill === '#3b251c'
+    && document.nodes.site_title?.name === 'Website Title'
+    && document.nodes.site_title?.content === 'After Hours Book Club'
+    && document.nodes.graphic_title?.content === 'Quiet books. Good company.'
+    && Object.keys(document.assets).length === 0;
+  return isOldLaunchSeed || isOldBookClubSeed;
 }
 
 function migrateDocument(document: DocumentModel): DocumentModel {

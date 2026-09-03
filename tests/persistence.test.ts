@@ -3,21 +3,23 @@ import { createInitialDocument, createInitialState } from '../src/model';
 import { deserializeEditorState, serializeEditorState } from '../src/persistence';
 
 describe('File persistence', () => {
-  it('seeds the Book Club Frames with exact targets, TBA details, bindings, and no reference Asset', () => {
+  it('seeds the Book Club Frames with the reference palette, targets, bindings, and no reference Asset', () => {
     const document = createInitialDocument();
     expect(document.assets).toEqual({});
     expect(Object.values(document.assets).some((asset) => asset.originalName === 'book-club-reference.jpg')).toBe(false);
-    expect(document.nodes.artboard_website.style.fill).toBe('#3b251c');
-    expect(document.nodes.artboard_graphic.style.fill).toBe('#3b251c');
+    expect(document.nodes.artboard_website.style.fill).toBe('#fbfaf7');
+    expect(document.nodes.artboard_graphic.style.fill).toBe('#e7e1d6');
     expect(document.nodes.website_background.name).toBe('Website Background');
     expect(document.nodes.graphic_background.name).toBe('Graphic Background');
-    expect(document.nodes.site_title).toEqual(expect.objectContaining({ name: 'Website Title', content: 'After Hours Book Club' }));
-    expect(document.nodes.graphic_title).toEqual(expect.objectContaining({ name: 'Graphic Subtitle', content: 'Quiet books. Good company.' }));
-    expect(document.nodes.graphic_tagline).toEqual(expect.objectContaining({ name: 'Graphic Secondary Line', content: 'Bring a friend.' }));
-    expect(document.nodes.graphic_image).toEqual(expect.objectContaining({ name: 'Graphic Image Area', type: 'rectangle' }));
+    expect(document.nodes.site_title).toEqual(expect.objectContaining({ name: 'Website Title', content: 'Make room for\nmore ideas.' }));
+    expect(document.nodes.graphic_title).toEqual(expect.objectContaining({ name: 'Graphic Subtitle', content: 'Make room\nfor new ideas.' }));
+    expect(document.nodes.graphic_tagline).toEqual(expect.objectContaining({ name: 'Graphic Secondary Line', content: 'Leave with a clearer next step.' }));
+    expect(document.nodes.graphic_image).toEqual(expect.objectContaining({ name: 'Graphic Image Area', type: 'rectangle', hidden: true }));
     const targetNames = ['Website Date', 'Website Time', 'Website Venue', 'Graphic Date', 'Graphic Time', 'Graphic Venue'];
     targetNames.forEach((name) => expect(Object.values(document.nodes).filter((node) => node.name === name)).toHaveLength(1));
-    expect(targetNames.every((name) => Object.values(document.nodes).some((node) => node.name === name && node.content === 'TBA'))).toBe(true);
+    expect(document.nodes.site_date.content).toBe('Friday, 19 September 2025');
+    expect(document.nodes.site_time.content).toBe('7:00 PM');
+    expect(document.nodes.site_location.content).toBe('The Reading Room · 2nd Street');
     const bindings = Object.values(document.nodes).filter((node) => node.binding).map((node) => `${node.name}:${node.binding?.key}`);
     expect(bindings).toEqual(expect.arrayContaining(['Website Date:event.date', 'Graphic Date:event.date', 'Website Time:event.time', 'Graphic Time:event.time', 'Website Venue:event.venue', 'Graphic Venue:event.venue']));
     expect(bindings).toHaveLength(6);
@@ -37,7 +39,7 @@ describe('File persistence', () => {
     expect(restored.files[1].open).toBe(false);
     expect(restored.files[1].document.nodes.site_title.content).toBe('A separate draft');
     expect(restored.document.name).toBe('Book Club');
-    expect(restored.document.nodes.site_title.content).toContain('After Hours');
+    expect(restored.document.nodes.site_title.content).toContain('Make room');
   });
 
   it('migrates only the untouched legacy starter record to the deterministic Book Club File', () => {
@@ -49,8 +51,8 @@ describe('File persistence', () => {
     delete legacy.nodes.site_tagline;
     const restored = deserializeEditorState(JSON.stringify({ version: 1, document: legacy }));
     expect(restored.document.name).toBe('Book Club');
-    expect(restored.document.nodes.site_title.content).toContain('After Hours');
-    expect(restored.document.nodes.graphic_title.content).toBe('Quiet books. Good company.');
+    expect(restored.document.nodes.site_title.content).toContain('Make room');
+    expect(restored.document.nodes.graphic_title.content).toBe('Make room\nfor new ideas.');
     expect(restored.document.assets).toEqual({});
   });
 
