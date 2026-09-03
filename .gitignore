@@ -1,12 +1,16 @@
+# Dependencies and generated output
 node_modules/
 dist/
 coverage/
+
+# Local deployment and environment metadata
 .vercel/
 .env
 .env.*
 !.env.example
 *.local
 *.log
+
+# OS files
 .DS_Store
 Thumbs.db
-
