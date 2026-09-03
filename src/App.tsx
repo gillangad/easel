@@ -1287,7 +1287,7 @@ function ShapeVisual({ node }: { node: DesignNode }) {
 
 function ImageContent({ asset, alt, label }: { asset?: ImageAsset; alt: string; label: string }) {
   if (!asset) return <div className="image-placeholder"><ImageIcon size={20} /><span>Image unavailable</span></div>;
-  return <img className="node-image" src={asset.dataUrl} alt={alt} draggable={false} data-image-label={label} />;
+  return <img className="node-image-content" src={asset.dataUrl} alt={alt} draggable={false} data-image-label={label} />;
 }
 
 type SelectionLayerProps = {

@@ -165,7 +165,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .artboard-node::before { content: attr(data-label); position: absolute; left: 0; top: -25px; color: var(--color-artboard-label); font-size: 11px; font-weight: 500; letter-spacing: .04em; white-space: nowrap; pointer-events: none; }
 .frame-node { isolation: isolate; }
 .rectangle-node, .frame-node, .artboard-node { user-select: none; }
-.node-image { display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+.node-image-content { display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
 .image-placeholder { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px; background: #ecece9; color: #8b8b86; font-size: 11px; }
 .theme-dark .image-placeholder { background: #282826; color: #9a9a95; }
 .canvas-node.is-focus-target { box-shadow: 0 0 0 2px var(--color-active), 0 0 0 5px rgba(59, 130, 246, .12); }

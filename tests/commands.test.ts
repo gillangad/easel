@@ -103,5 +103,10 @@ describe('Easel commands', () => {
     const image = Object.values(placed.document.nodes).find((node) => node.type === 'image' && node.parentId === 'artboard_website');
     expect(image?.height).toBeCloseTo(200 / asset.aspectRatio);
     expect(image?.parentId).toBe('artboard_website');
+
+    const graphicPlaced = dispatchCommand(withAsset, { type: 'place-asset', assetId: asset.id, frameId: 'artboard_graphic', position: { x: 32, y: 318 }, width: 416, height: 194, source: 'human' });
+    const graphicImage = Object.values(graphicPlaced.document.nodes).find((node) => node.type === 'image' && node.parentId === 'artboard_graphic');
+    expect(graphicImage).toBeTruthy();
+    expect(graphicPlaced.document.nodes.artboard_graphic.childIds.indexOf(graphicImage?.id ?? '')).toBeGreaterThan(graphicPlaced.document.nodes.artboard_graphic.childIds.indexOf('graphic_image'));
   });
 });
