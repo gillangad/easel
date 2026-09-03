@@ -700,7 +700,9 @@ export default function App() {
   const importImage = useCallback(async (file: File, sourceLabel = 'Uploaded') => {
     try {
       const asset = await readImageAsset(file, sourceLabel);
-      runCommand({ type: 'import-asset', asset, source: 'human' }, 'success');
+      const existing = Object.values(stateRef.current.document.assets).find((candidate) => candidate.dataUrl === asset.dataUrl);
+      if (!runCommand({ type: 'import-asset', asset, source: 'human' }, 'success')) return;
+      setSelectedAssetId(existing?.id ?? asset.id);
     } catch (error) {
       notify(error instanceof Error ? error.message : 'The image could not be added.', 'error');
     }
