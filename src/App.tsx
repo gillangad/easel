@@ -1477,6 +1477,13 @@ function LeftPanel({ width, resizeActive, resizeMin, resizeMax, onResizeStart, o
   const designChildIds = activeDesign?.childIds ?? [];
   const looseRootIds = getPage(document)?.rootIds.filter((id) => document.nodes[id]?.type !== 'artboard') ?? [];
   const hasLayers = designChildIds.length > 0 || looseRootIds.length > 0;
+  const expandableLayerIds = [...new Set([
+    ...designs.filter((design) => design.childIds.length > 0).map((design) => design.id),
+    ...designs.flatMap((design) => getDescendantIds(document, design.id)).filter((id) => document.nodes[id]?.childIds.length),
+    ...looseRootIds.filter((id) => document.nodes[id]?.childIds.length),
+  ])];
+  const allLayersExpanded = expandableLayerIds.length > 0 && expandableLayerIds.every((id) => expandedIds.has(id));
+  const toggleAllLayers = () => setExpandedIds(allLayersExpanded ? new Set() : new Set(expandableLayerIds));
   const visibleAssets = assets.filter((asset) => !assetSearch.trim() || asset.originalName.toLowerCase().includes(assetSearch.trim().toLowerCase()) || (asset.sourceLabel ?? '').toLowerCase().includes(assetSearch.trim().toLowerCase()));
   const selectedAsset = selectedAssetId ? assets.find((asset) => asset.id === selectedAssetId) : undefined;
 
@@ -1503,7 +1510,7 @@ function LeftPanel({ width, resizeActive, resizeMin, resizeMax, onResizeStart, o
         </div>)}</div>
       </section>
       <section className="panel-section layers-section">
-        <div className="section-heading"><span>{activeDesign ? `Layers · ${activeDesign.name}` : 'Layers'}</span><button className="small-action collapse-layers-action" type="button" aria-label="Collapse all layers" title="Collapse all layers" onClick={() => setExpandedIds(new Set())}><ChevronDown size={14} /></button></div>
+        <div className="section-heading"><span>{activeDesign ? `Layers · ${activeDesign.name}` : 'Layers'}</span><button className="small-action collapse-layers-action" type="button" aria-label={allLayersExpanded ? 'Collapse all layers' : 'Expand all layers'} title={allLayersExpanded ? 'Collapse all layers' : 'Expand all layers'} onClick={toggleAllLayers}>{allLayersExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button></div>
         <div className="layer-tree" ref={layerTreeRef}>
           {activeDesign && expandedIds.has(activeDesign.id) && designChildIds.slice().reverse().map((id) => <LayerTree key={id} id={id} document={document} selectedIds={selectedIds} workingIds={workingIds} pulseIds={pulseIds} depth={0} expandedIds={expandedIds} dropTarget={dropTarget} onSelect={onSelect} onToggleExpanded={(id) => setExpandedIds((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} onToggleHidden={onToggleHidden} onToggleLocked={onToggleLocked} onDragStart={handleDragStart} onDragOver={handleDragOver} onDrop={handleDrop} onDragEnd={handleDragEnd} />)}
           {looseRootIds.length > 0 && <div className="canvas-items-group"><div className="layer-group-label">Canvas items</div>{looseRootIds.slice().reverse().map((id) => <LayerTree key={id} id={id} document={document} selectedIds={selectedIds} workingIds={workingIds} pulseIds={pulseIds} depth={0} expandedIds={expandedIds} dropTarget={dropTarget} onSelect={onSelect} onToggleExpanded={(id) => setExpandedIds((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} onToggleHidden={onToggleHidden} onToggleLocked={onToggleLocked} onDragStart={handleDragStart} onDragOver={handleDragOver} onDrop={handleDrop} onDragEnd={handleDragEnd} />)}</div>}
