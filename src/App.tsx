@@ -1512,7 +1512,7 @@ function NodeRenderer({ id, document, tool, selectedIds, editingNodeId, pulseIds
   }
   if (node.type === 'image') {
     const asset = node.image?.assetId ? document.assets[node.image.assetId] : undefined;
-    return <div className={className} data-node-id={node.id} data-node-type={node.type} aria-label={node.image?.alt || node.name} style={{ ...style, cursor: node.locked ? 'not-allowed' : tool === 'select' ? 'move' : 'default' }} onPointerDown={onDown} onDoubleClick={(event) => { event.stopPropagation(); if (tool === 'select' && !node.locked) onDoubleClick(node.id); }}><ImageContent asset={asset} alt={node.image?.alt || node.name} label={node.image?.label || node.name} />{children}</div>;
+    return <div className={className} data-node-id={node.id} data-node-type={node.type} aria-label={node.image?.alt || node.name} style={{ ...style, cursor: node.locked ? 'not-allowed' : tool === 'select' ? 'move' : 'default' }} onPointerDown={onDown} onDoubleClick={(event) => { event.stopPropagation(); if (tool === 'select' && !node.locked) onDoubleClick(node.id); }}><ImageContent asset={asset} alt={node.image?.alt || node.name} label={node.image?.label || node.name} fit={node.image?.fit} />{children}</div>;
   }
   return <div className={`${className} ${node.type === 'artboard' ? 'artboard-node' : node.type === 'frame' ? 'frame-node' : `${node.type}-node`}`} data-node-id={node.id} data-node-type={node.type === 'artboard' ? 'frame' : node.type} data-label={node.name} aria-label={`${nodeTypeLabel(node.type)} ${node.name}`} style={{ ...style, cursor: node.locked ? 'not-allowed' : tool === 'select' ? 'move' : 'default' }} onPointerDown={onDown} onDoubleClick={(event) => { event.stopPropagation(); if (tool === 'select' && !node.locked) onDoubleClick(node.id); }}>{vectorShape ? <ShapeVisual node={node} /> : null}{children}</div>;
 }
@@ -1533,9 +1533,9 @@ function ShapeVisual({ node }: { node: DesignNode }) {
   return <svg className="shape-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><line x1="5" y1="50" x2="95" y2="50" stroke={stroke} strokeWidth={strokeWidth * 1.5} strokeDasharray={dash} strokeLinecap="round" /></svg>;
 }
 
-function ImageContent({ asset, alt, label }: { asset?: ImageAsset; alt: string; label: string }) {
+function ImageContent({ asset, alt, label, fit }: { asset?: ImageAsset; alt: string; label: string; fit?: 'contain' | 'cover' }) {
   if (!asset) return <div className="image-placeholder"><ImageIcon size={20} /><span>Image unavailable</span></div>;
-  return <img className="node-image-content" src={asset.dataUrl} alt={alt} draggable={false} data-image-label={label} />;
+  return <img className="node-image-content" src={asset.dataUrl} alt={alt} draggable={false} data-image-label={label} style={{ objectFit: fit === 'cover' ? 'cover' : 'contain', objectPosition: 'center' }} />;
 }
 
 type SelectionLayerProps = {
