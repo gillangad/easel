@@ -307,6 +307,7 @@ type ElementPatchFields = {
   rotation?: number;
   sizing?: Partial<NodeSizing>;
   content?: string;
+  annotationIds?: string[];
   style?: Partial<NodeStyle>;
   layout?: Partial<LayoutStyle>;
   shape?: { sides?: number };

@@ -83,6 +83,10 @@ describe('Easel commands', () => {
     expect(websiteVisible.document.nodes.artboard_website.hidden).toBe(false);
     expect(childHidden.document.nodes.artboard_website.hidden).toBe(false);
     expect(childHidden.document.nodes.site_title.hidden).toBe(true);
+
+    const selectedFrame = dispatchCommand(initial, { type: 'set-selection', ids: ['artboard_website'] });
+    expect(getCanvasSelectionId(selectedFrame.document, 'website_background')).toBe('artboard_website');
+    expect(getCanvasSelectionId(selectedFrame.document, 'site_title')).toBe('artboard_website');
   });
 
   it('reorders a Layer within its existing sibling list and respects locks', () => {
@@ -103,6 +107,47 @@ describe('Easel commands', () => {
     const skipped = dispatchCommand(locked, { type: 'reorder-layer', id: ids[2], beforeId: ids[0], source: 'human' });
     expect(skipped.document.nodes.site_header.childIds).toEqual(originalOrder);
     expect(skipped.lastAction?.skippedIds).toContain(ids[2]);
+  });
+
+  it('keeps multi-layer arrange order stable and rejects cross-parent arrange', () => {
+    const initial = createInitialState();
+    const arranged = dispatchCommand(initial, { type: 'reorder-elements', ids: ['site_kicker', 'site_title'], direction: 'front', source: 'human' });
+    const websiteChildren = arranged.document.nodes.artboard_website.childIds;
+    expect(websiteChildren.slice(-2)).toEqual(['site_kicker', 'site_title']);
+
+    const crossParent = tryDispatchCommand(initial, { type: 'reorder-elements', ids: ['site_title', 'graphic_title'], direction: 'front', source: 'agent' });
+    expect(crossParent.error?.code).toBe('INVALID_HIERARCHY');
+    expect(crossParent.error?.message).toContain('same Frame');
+  });
+
+  it('removes only addressed annotations with the edit and restores them on undo', () => {
+    const initial = createInitialState();
+    const noted = dispatchCommand(initial, { type: 'add-annotation', nodeId: 'site_title', text: '', source: 'agent' });
+    const markerId = noted.document.nodes.site_title.annotations?.[0]?.id as string;
+    const secondNote = dispatchCommand(noted, { type: 'add-annotation', nodeId: 'site_title', text: 'Keep this note.', source: 'agent' });
+    const messageId = secondNote.document.nodes.site_title.annotations?.[1]?.id as string;
+    const edited = dispatchCommand(secondNote, { type: 'update-elements', updates: [{ id: 'site_title', content: 'Short title', annotationIds: [markerId] }], source: 'agent' });
+
+    expect(edited.document.nodes.site_title.content).toBe('Short title');
+    expect(edited.document.nodes.site_title.annotations).toEqual([{ id: messageId, text: 'Keep this note.', resolved: false }]);
+    expect(edited.lastAction?.result).toEqual(expect.objectContaining({ removedAnnotationIds: [markerId] }));
+
+    const undone = dispatchCommand(edited, { type: 'undo' });
+    expect(undone.document.nodes.site_title.content).toBe(initial.document.nodes.site_title.content);
+    expect(undone.document.nodes.site_title.annotations).toEqual([
+      { id: markerId, text: '', resolved: false },
+      { id: messageId, text: 'Keep this note.', resolved: false },
+    ]);
+  });
+
+  it('retains addressed annotations when the requested edit fails', () => {
+    const initial = createInitialState();
+    const noted = dispatchCommand(initial, { type: 'add-annotation', nodeId: 'site_title', text: 'Keep on failure.', source: 'agent' });
+    const annotationId = noted.document.nodes.site_title.annotations?.[0]?.id as string;
+    const failed = dispatchCommand(noted, { type: 'update-elements', updates: [{ id: 'site_title', style: { fontSize: -1 }, annotationIds: [annotationId] }], source: 'agent' });
+
+    expect(failed.document.nodes.site_title.annotations).toEqual([{ id: annotationId, text: 'Keep on failure.', resolved: false }]);
+    expect(failed.lastAction?.failedIds).toContain('site_title');
   });
 
   it('supports all first-class shapes and aspect-ratio-preserving asset placement', () => {

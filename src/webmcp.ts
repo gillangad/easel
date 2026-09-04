@@ -176,6 +176,7 @@ const PATCH_SCHEMA = {
     width: { type: 'number', minimum: 1, maximum: 20000 },
     height: { type: 'number', minimum: 1, maximum: 20000 },
     rotation: { type: 'number', minimum: -360, maximum: 360 },
+    annotationIds: { type: 'array', maxItems: 20, items: ID_SCHEMA, description: 'Review note IDs explicitly addressed by this update; successful updates remove only these notes.' },
     sizing: { type: 'object', properties: { width: { type: 'string', enum: ['fixed', 'hug', 'fill'] }, height: { type: 'string', enum: ['fixed', 'hug', 'fill'] } }, minProperties: 1, additionalProperties: false },
     content: { type: 'string', maxLength: 6000 },
     style: STYLE_SCHEMA,
@@ -280,7 +281,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'update_elements',
     title: 'Update Layers',
-    description: 'Update Website mock-up Layers or use the explicit history branch to undo or redo the active File.',
+    description: 'Update Website mock-up Layers or use the explicit history branch to undo or redo the active File. When an edit addresses a visible review note, include that note ID in annotationIds on the same update; a successful update removes only those addressed notes in the same undoable transaction.',
     inputSchema: { type: 'object', properties: { updates: { type: 'array', minItems: 1, maxItems: 50, items: PATCH_SCHEMA }, history: { type: 'object', properties: { action: { type: 'string', enum: ['undo', 'redo'] }, steps: { type: 'integer', minimum: 1, maximum: 20 } }, required: ['action', 'steps'], additionalProperties: false }, force: { type: 'boolean', description: 'Deliberately allow writes to locked Layers.' } }, oneOf: [{ required: ['updates'], not: { required: ['history'] } }, { required: ['history'], not: { required: ['updates'] } }], additionalProperties: false },
     annotations: { untrustedContentHint: true },
   },
@@ -563,7 +564,7 @@ function parseSemanticTarget(value: unknown): SemanticTarget {
 
 function parsePatch(value: unknown): ElementPatch {
   const record = assertRecord(value, 'Each update must be an object.');
-  assertKeys(record, ['id', 'target', 'name', 'x', 'y', 'width', 'height', 'rotation', 'sizing', 'content', 'style', 'layout', 'shape', 'image', 'parentId', 'hidden', 'locked']);
+  assertKeys(record, ['id', 'target', 'name', 'x', 'y', 'width', 'height', 'rotation', 'annotationIds', 'sizing', 'content', 'style', 'layout', 'shape', 'image', 'parentId', 'hidden', 'locked']);
   const hasId = record.id !== undefined;
   const hasTarget = record.target !== undefined;
   if (hasId === hasTarget) throw new Error('Each update needs exactly one of id or target.');
@@ -574,6 +575,7 @@ function parsePatch(value: unknown): ElementPatch {
     width: record.width === undefined ? undefined : finiteNumber(record.width, 'width', 1, 20000),
     height: record.height === undefined ? undefined : finiteNumber(record.height, 'height', 1, 20000),
     rotation: record.rotation === undefined ? undefined : finiteNumber(record.rotation, 'rotation', -360, 360),
+    annotationIds: record.annotationIds === undefined ? undefined : parseIds(record, 'annotationIds', 20),
     sizing: parseSizingPatch(record.sizing),
     content: exactContent(record, 'content'),
     style: record.style === undefined ? undefined : parseStyle(record.style),
@@ -818,7 +820,7 @@ function compactArrayItem(value: unknown, key: string): unknown {
 
 function resultEnvelope(result: Record<string, unknown>, fallbackMessage: string): Record<string, unknown> {
   const state = result;
-  const core = ['ok', 'action', 'message', 'revision', 'file', 'fileId', 'fileName', 'canvas', 'targetIds', 'totalMatches', 'offset', 'returnedCount', 'returnedLayerCount', 'nextOffset', 'truncated', 'resultTruncated', 'changedCount', 'limits', 'counts', 'selection', 'history', 'annotation', 'annotations', 'changed', 'changedIds', 'skippedIds', 'failedIds', 'createdIds', 'deletedIds', 'mappings', 'frame', 'frameId', 'frameName', 'frameIds', 'frames', 'layers', 'assets', 'asset', 'assetId', 'layerId', 'layerName', 'bounds', 'dimensions', 'source', 'format', 'scale', 'files', 'snapshotId', 'previewOpen', 'exportReady', 'unsupportedStyles', 'deduplicated', 'error'];
+  const core = ['ok', 'action', 'message', 'revision', 'file', 'fileId', 'fileName', 'canvas', 'targetIds', 'totalMatches', 'offset', 'returnedCount', 'returnedLayerCount', 'nextOffset', 'truncated', 'resultTruncated', 'changedCount', 'removedAnnotationIds', 'limits', 'counts', 'selection', 'history', 'annotation', 'annotations', 'changed', 'changedIds', 'skippedIds', 'failedIds', 'createdIds', 'deletedIds', 'mappings', 'frame', 'frameId', 'frameName', 'frameIds', 'frames', 'layers', 'assets', 'asset', 'assetId', 'layerId', 'layerName', 'bounds', 'dimensions', 'source', 'format', 'scale', 'files', 'snapshotId', 'previewOpen', 'exportReady', 'unsupportedStyles', 'deduplicated', 'error'];
   return Object.fromEntries(core.filter((key) => state[key] !== undefined).map((key) => [key, state[key]]).concat(!state.message ? [['message', fallbackMessage]] : []));
 }
 

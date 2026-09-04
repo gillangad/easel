@@ -98,6 +98,22 @@ describe('Website mock-up Tool bridge', () => {
     expect(result.changed).toEqual([expect.objectContaining({ values: expect.objectContaining({ name: 'Hero title', style: { color: '#123456' } }) })]);
   });
 
+  it('lets an update explicitly dismiss addressed annotations in the same transaction', async () => {
+    const initial = createInitialState();
+    const harness = makeHarness(initial);
+    const annotation = await harness.bridge.invoke('annotate_elements', { nodeId: 'site_title', action: 'add', text: 'Review this title.' });
+    const id = annotation.annotation && typeof annotation.annotation === 'object' && 'id' in annotation.annotation ? annotation.annotation.id as string : '';
+    const updated = await harness.bridge.invoke('update_elements', { updates: [{ id: 'site_title', content: 'Reviewed title', annotationIds: [id] }] });
+
+    expect(updated.ok).toBe(true);
+    expect(updated.removedAnnotationIds).toEqual([id]);
+    expect(harness.getState().document.nodes.site_title.annotations).toBeUndefined();
+    const undone = await harness.bridge.invoke('update_elements', { history: { action: 'undo', steps: 1 } });
+    expect(undone.ok).toBe(true);
+    expect(harness.getState().document.nodes.site_title.content).toBe('After Hours Book Club');
+    expect(harness.getState().document.nodes.site_title.annotations).toEqual([{ id, text: 'Review this title.', resolved: false }]);
+  });
+
   it('supports filtered, pageable Frame inspection and selection scope', async () => {
     const harness = makeHarness();
     const first = await harness.bridge.invoke('inspect_document', { scope: 'frame', frameName: 'Website', type: 'text', maxLayers: 2, maxTextChars: 40 });

@@ -971,6 +971,18 @@ function changedValueRecord(node: DesignNode, patches: ElementPatch[]): Record<s
   return values;
 }
 
+function removeAddressedAnnotations(node: DesignNode, annotationIds: string[]): string[] {
+  const requested = uniqueIds(annotationIds);
+  if (!requested.length) return [];
+  const annotations = node.annotations ?? [];
+  const available = new Set(annotations.map((annotation) => annotation.id));
+  const missing = requested.filter((id) => !available.has(id));
+  if (missing.length) throw new CommandError('ANNOTATION_NOT_FOUND', `No addressed review note with the ID “${missing[0]}” exists on ${node.name}.`, [node.id, ...missing]);
+  node.annotations = annotations.filter((annotation) => !requested.includes(annotation.id));
+  if (!node.annotations.length) delete node.annotations;
+  return requested;
+}
+
 function changedNodeRecord(document: DocumentModel, node: DesignNode, patches: ElementPatch[]): Record<string, unknown> {
   const artboard = getArtboardForNode(document, node.id);
   const rect = getAbsoluteRect(document, node.id);
@@ -993,6 +1005,7 @@ function updateElementsMutation(document: DocumentModel, input: UpdateElementsIn
   const changedIds: string[] = [];
   const skippedIds: string[] = [];
   const failedIds: string[] = [];
+  const removedAnnotationIds: string[] = [];
   const resolvedUpdates = updates.map((patch) => {
     const id = patch.id ?? (patch.target.selection ? resolveSelectionTarget(document) : resolveSemanticTarget(document, patch.target));
     return { id, patch };
@@ -1013,6 +1026,7 @@ function updateElementsMutation(document: DocumentModel, input: UpdateElementsIn
     try {
       patchNode(document, node, { ...patch, id } as ElementPatch & { id: string });
       if (patch.parentId !== undefined) moveNodeToParent(document, node, patch.parentId);
+      removedAnnotationIds.push(...removeAddressedAnnotations(node, patch.annotationIds ?? []));
       changedIds.push(node.id);
     } catch {
       document.nodes[id] = backup;
@@ -1022,7 +1036,7 @@ function updateElementsMutation(document: DocumentModel, input: UpdateElementsIn
   changedIds.push(...materializeDocumentLayout(document));
   const uniqueChangedIds = uniqueIds(changedIds);
   const changed = uniqueChangedIds.map((id) => changedNodeRecord(document, document.nodes[id], patchesById.get(id) ?? []));
-  const result = { changed, changedCount: uniqueChangedIds.length };
+  const result = { changed, changedCount: uniqueChangedIds.length, removedAnnotationIds: uniqueIds(removedAnnotationIds) };
   if (!uniqueChangedIds.length && failedIds.length) return { document, changedIds: uniqueChangedIds, skippedIds, failedIds, result, message: 'No requested updates could be applied.' };
   return { document, changedIds: uniqueChangedIds, skippedIds, failedIds, result, message: `Updated ${uniqueChangedIds.length} layer${uniqueChangedIds.length === 1 ? '' : 's'}` };
 }
@@ -1122,21 +1136,46 @@ function reorderMutation(document: DocumentModel, ids: string[], direction: Reor
   const selected = effectiveSelection(document, ids);
   const skippedIds = selected.filter((id) => isEffectivelyLocked(document, id));
   const movable = selected.filter((id) => !skippedIds.includes(id));
-  const changedIds: string[] = [];
+  if (!movable.length) return noOpOutcome(document, 'Locked elements were skipped.', skippedIds);
+
+  const groups = new Map<string, { siblings: string[]; ids: string[] }>();
   movable.forEach((id) => {
     const node = document.nodes[id];
     const siblings = node.parentId ? document.nodes[node.parentId]?.childIds : getPage(document, node.pageId)?.rootIds;
     if (!siblings) return;
-    const currentIndex = siblings.indexOf(id);
-    if (currentIndex < 0) return;
-    const targetIndex = direction === 'front' ? siblings.length - 1 : direction === 'back' ? 0 : currentIndex + (direction === 'forward' ? 1 : -1);
-    const bounded = clamp(targetIndex, 0, siblings.length - 1);
-    if (bounded === currentIndex) return;
-    siblings.splice(currentIndex, 1);
-    siblings.splice(bounded, 0, id);
-    changedIds.push(id);
+    const key = `${node.pageId}:${node.parentId ?? '__canvas_root__'}`;
+    const group = groups.get(key) ?? { siblings, ids: [] };
+    group.ids.push(id);
+    groups.set(key, group);
   });
-  return { document, changedIds, skippedIds, message: `Reordered ${changedIds.length} element${changedIds.length === 1 ? '' : 's'}` };
+  if (groups.size > 1) throw new CommandError('INVALID_HIERARCHY', 'Arrange works within one parent or Frame at a time. Select Layers from the same Frame before changing their order.', movable);
+
+  const group = [...groups.values()][0];
+  if (!group) return noOpOutcome(document, 'The requested Layers are not in an orderable sibling list.', skippedIds);
+  const original = [...group.siblings];
+  const selectedSet = new Set(group.ids);
+  let next: string[];
+  if (direction === 'front' || direction === 'back') {
+    const selectedInOrder = original.filter((id) => selectedSet.has(id));
+    const unselectedInOrder = original.filter((id) => !selectedSet.has(id));
+    next = direction === 'front' ? [...unselectedInOrder, ...selectedInOrder] : [...selectedInOrder, ...unselectedInOrder];
+  } else {
+    next = [...original];
+    if (direction === 'forward') {
+      for (let index = next.length - 2; index >= 0; index -= 1) {
+        if (selectedSet.has(next[index]) && !selectedSet.has(next[index + 1])) [next[index], next[index + 1]] = [next[index + 1], next[index]];
+      }
+    } else {
+      for (let index = 1; index < next.length; index += 1) {
+        if (selectedSet.has(next[index]) && !selectedSet.has(next[index - 1])) [next[index - 1], next[index]] = [next[index], next[index - 1]];
+      }
+    }
+  }
+  const changedIds = group.ids.filter((id) => original.indexOf(id) !== next.indexOf(id));
+  if (!changedIds.length) return noOpOutcome(document, 'Layer order is unchanged.', skippedIds);
+  group.siblings.splice(0, group.siblings.length, ...next);
+  changedIds.forEach((id) => setNodeUpdated(document.nodes[id]));
+  return { document, changedIds, skippedIds, result: { order: next }, message: `Reordered ${changedIds.length} element${changedIds.length === 1 ? '' : 's'}` };
 }
 
 function reorderLayerMutation(document: DocumentModel, input: LayerReorderInput): MutationOutcome {

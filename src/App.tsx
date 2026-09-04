@@ -39,8 +39,8 @@ import {
   Layers3,
   Lock,
   MessageSquarePlus,
+  Moon,
   PanelLeft,
-  PanelLeftClose,
   Palette,
   Plus,
   RotateCcw,
@@ -49,6 +49,7 @@ import {
   Scan,
   SendToBack,
   Settings2,
+  Sun,
   Square,
   Triangle,
   Trash2,
@@ -72,6 +73,7 @@ import {
   createInitialDocument,
   createInitialState,
   getLeftPanelBounds,
+  LEFT_PANEL_COLLAPSE_THRESHOLD,
   getAbsolutePosition,
   getAbsoluteRect,
   getAncestorIds,
@@ -113,7 +115,7 @@ type ToastState = { kind: ToastKind; message: string };
 type PreviewTransform = { x: number; y: number; width: number; height: number; rotation: number };
 type DragSession =
   | { kind: 'pan'; startX: number; startY: number; startPan: Point }
-  | { kind: 'move'; startX: number; startY: number; ids: string[]; base: Record<string, PreviewTransform> }
+  | { kind: 'move'; startX: number; startY: number; ids: string[]; base: Record<string, PreviewTransform>; moved: boolean }
   | { kind: 'resize'; startX: number; startY: number; nodeId: string; corner: string; base: PreviewTransform }
   | { kind: 'rotate'; startX: number; startY: number; nodeId: string; base: PreviewTransform; center: Point };
 
@@ -135,6 +137,8 @@ type AnnotationTarget = {
   nodeId: string;
   annotationId?: string;
 };
+
+const MOVE_THRESHOLD = 4;
 
 const FONT_OPTIONS = [
   'Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
@@ -721,12 +725,24 @@ export default function App() {
 
   const leftPanelBounds = getLeftPanelBounds(editorViewportWidth);
   const leftPanelWidth = clampLeftPanelWidth(state.panels.leftWidth, editorViewportWidth);
+  const collapseLeftPanel = useCallback(() => {
+    panelResizeRef.current = null;
+    setPanelResizing(false);
+    const current = stateRef.current;
+    if (!current.panels.leftOpen) return;
+    commit({ ...current, panels: { ...current.panels, leftOpen: false } });
+  }, [commit]);
+
   const setLeftPanelWidth = useCallback((width: number) => {
+    if (width <= LEFT_PANEL_COLLAPSE_THRESHOLD) {
+      collapseLeftPanel();
+      return;
+    }
     const current = stateRef.current;
     const nextWidth = clampLeftPanelWidth(width, editorViewportWidth);
     if (nextWidth === current.panels.leftWidth) return;
     commit({ ...current, panels: { ...current.panels, leftWidth: nextWidth } });
-  }, [commit, editorViewportWidth]);
+  }, [collapseLeftPanel, commit, editorViewportWidth]);
 
   const startLeftPanelResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
@@ -738,12 +754,17 @@ export default function App() {
   }, [leftPanelWidth]);
 
   const handleLeftPanelResizeKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Home') {
+      event.preventDefault();
+      collapseLeftPanel();
+      return;
+    }
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
     event.preventDefault();
     const step = event.shiftKey ? 32 : 8;
     const currentWidth = clampLeftPanelWidth(stateRef.current.panels.leftWidth, editorViewportWidth);
     setLeftPanelWidth(currentWidth + (event.key === 'ArrowLeft' ? -step : step));
-  }, [editorViewportWidth, setLeftPanelWidth]);
+  }, [collapseLeftPanel, editorViewportWidth, setLeftPanelWidth]);
 
   useEffect(() => {
     const onMove = (event: PointerEvent) => {
@@ -1063,6 +1084,8 @@ export default function App() {
         });
       };
       if (drag.kind === 'move') {
+        if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < MOVE_THRESHOLD) return;
+        drag.moved = true;
         const current = stateRef.current;
         const snapped = getSnappedMove(current.document, drag.ids, delta);
         const next: Record<string, PreviewTransform> = {};
@@ -1101,7 +1124,7 @@ export default function App() {
       setDragging(false);
       const preview = dragPreviewRef.current;
       if (drag.kind === 'move') {
-        const updates: ElementPatch[] = drag.ids.flatMap((id) => preview[id] ? [{ id, x: preview[id].x, y: preview[id].y }] : []);
+        const updates: ElementPatch[] = drag.moved ? drag.ids.flatMap((id) => preview[id] ? [{ id, x: preview[id].x, y: preview[id].y }] : []) : [];
         if (updates.length) runCommand({ type: 'update-elements', updates, source: 'human' }, 'success');
       } else if (drag.kind === 'resize' && preview[drag.nodeId]) {
         const target = preview[drag.nodeId];
@@ -1147,7 +1170,7 @@ export default function App() {
       const node = current.document.nodes[id];
       if (node) base[id] = { x: node.x, y: node.y, width: node.width, height: node.height, rotation: node.rotation };
     });
-    dragRef.current = { kind: 'move', startX: event.clientX, startY: event.clientY, ids: moveIds, base };
+    dragRef.current = { kind: 'move', startX: event.clientX, startY: event.clientY, ids: moveIds, base, moved: false };
     event.currentTarget.setPointerCapture?.(event.pointerId);
     setDragging(true);
   }, [commit, notify, revealTargets, tool]);
@@ -1364,7 +1387,7 @@ export default function App() {
     <div className={`app-shell theme-${state.theme}`} data-theme={state.theme}>
       <div className="workspace" ref={workspaceRef}>
         {!state.panels.leftOpen && <button className="sidebar-reopen" type="button" aria-label="Show Layers panel" title="Show Layers panel" onClick={() => commit({ ...stateRef.current, panels: { ...stateRef.current.panels, leftOpen: true } })}><PanelLeft size={16} /></button>}
-        {state.panels.leftOpen && <LeftPanel width={leftPanelWidth} resizeActive={panelResizing} resizeMin={leftPanelBounds.minimum} resizeMax={leftPanelBounds.maximum} onResizeStart={startLeftPanelResize} onResizeKeyDown={handleLeftPanelResizeKeyDown} files={state.files} activeFileId={state.activeFileId} onSwitchFile={switchFile} onNewFile={createNewFile} onRenameFile={renameActiveFile} theme={state.theme} onTheme={(theme) => commit({ ...stateRef.current, theme })} document={currentDocument} designs={activeArtboards} activeDesign={activeDesign} assets={assets} selectedAssetId={selectedAssetId} onSelectAsset={setSelectedAssetId} onUploadAssets={() => fileInputRef.current?.click()} onPasteAsset={pasteAssetFromClipboard} selectedIds={currentDocument.selection.ids} workingIds={agentWorkingIds} pulseIds={pulseIds} revealRequest={layerRevealRequest} onSelect={selectNode} onSelectDesign={selectDesign} onToggleHidden={(id) => runCommand({ type: 'toggle-hidden', ids: [id], source: 'human' })} onToggleLocked={(id) => runCommand({ type: 'toggle-locked', ids: [id], source: 'human' })} onReorderLayer={(id, beforeId) => runCommand({ type: 'reorder-layer', id, beforeId, source: 'human' }, 'success')} onCollapse={() => commit({ ...stateRef.current, panels: { ...stateRef.current.panels, leftOpen: false } })} />}
+        {state.panels.leftOpen && <LeftPanel width={leftPanelWidth} resizeActive={panelResizing} resizeMin={leftPanelBounds.minimum} resizeMax={leftPanelBounds.maximum} onResizeStart={startLeftPanelResize} onResizeKeyDown={handleLeftPanelResizeKeyDown} files={state.files} activeFileId={state.activeFileId} onSwitchFile={switchFile} onNewFile={createNewFile} onRenameFile={renameActiveFile} theme={state.theme} onTheme={(theme) => commit({ ...stateRef.current, theme })} document={currentDocument} designs={activeArtboards} activeDesign={activeDesign} assets={assets} selectedAssetId={selectedAssetId} onSelectAsset={setSelectedAssetId} onUploadAssets={() => fileInputRef.current?.click()} onPasteAsset={pasteAssetFromClipboard} selectedIds={currentDocument.selection.ids} workingIds={agentWorkingIds} pulseIds={pulseIds} revealRequest={layerRevealRequest} onSelect={selectNode} onSelectDesign={selectDesign} onToggleHidden={(id) => runCommand({ type: 'toggle-hidden', ids: [id], source: 'human' })} onToggleLocked={(id) => runCommand({ type: 'toggle-locked', ids: [id], source: 'human' })} onReorderLayer={(id, beforeId) => runCommand({ type: 'reorder-layer', id, beforeId, source: 'human' }, 'success')} />}
         <ToolRail tool={tool} onTool={handleToolChange} shapeMenuOpen={shapeMenuOpen} onShapeMenu={() => setShapeMenuOpen((open) => !open)} onFit={fitSelection} leftOpen={state.panels.leftOpen} canUndo={Boolean(state.history.length)} canRedo={Boolean(state.future.length)} onUndo={() => runCommand({ type: 'undo' })} onRedo={() => runCommand({ type: 'redo' })} />
         <main className="canvas-main">
           <div className={`canvas-stage ${dragging ? 'is-dragging' : ''}`} ref={stageRef} onPointerDown={handleStagePointerDown} onWheel={handleWheel} onDrop={handleStageDrop} onDragOver={handleStageDragOver} tabIndex={0} aria-label="Canvas">
@@ -1436,6 +1459,8 @@ function NodeRenderer({ id, document, tool, selectedIds, editingNodeId, pulseIds
   const width = transform?.width ?? node.width;
   const height = transform?.height ?? node.height;
   const rotation = transform?.rotation ?? node.rotation;
+  const siblings = node.parentId ? document.nodes[node.parentId]?.childIds : document.pages.find((page) => page.id === node.pageId)?.rootIds;
+  const siblingIndex = siblings?.indexOf(node.id) ?? -1;
   const vectorShape = node.type === 'polygon' || node.type === 'line' || node.type === 'arrow';
   const style: CSSProperties = {
     position: flexChild && !previewing ? 'relative' : 'absolute',
@@ -1465,7 +1490,7 @@ function NodeRenderer({ id, document, tool, selectedIds, editingNodeId, pulseIds
     flexWrap: node.layout?.wrap ? 'wrap' : undefined,
     alignItems: node.layout && node.layout.mode !== 'free' ? node.layout.alignItems : undefined,
     justifyContent: node.layout && node.layout.mode !== 'free' ? node.layout.justifyContent : undefined,
-    zIndex: node.type === 'artboard' ? 1 : undefined,
+    zIndex: siblingIndex >= 0 ? siblingIndex + 1 : undefined,
   };
   const className = ['canvas-node', `node-${node.type}`, selectedIds.includes(node.id) ? 'is-selected' : '', pulseIds.includes(node.id) ? 'is-pulsing' : '', workingIds.includes(node.id) ? node.type === 'artboard' ? 'is-agent-working-design' : 'is-agent-working-node' : '', focusIds.includes(node.id) ? 'is-focus-target' : '', node.locked ? 'is-locked' : ''].filter(Boolean).join(' ');
 
@@ -1478,7 +1503,7 @@ function NodeRenderer({ id, document, tool, selectedIds, editingNodeId, pulseIds
       onAnnotate(node.id, event);
       return;
     }
-    onPointerDown(getCanvasSelectionId(document, node.id), event);
+    onPointerDown(event.shiftKey ? node.id : getCanvasSelectionId(document, node.id), event);
   };
 
   const children = node.childIds.map((childId) => <NodeRenderer key={childId} id={childId} document={document} tool={tool} selectedIds={selectedIds} editingNodeId={editingNodeId} pulseIds={pulseIds} workingIds={workingIds} focusIds={focusIds} preview={preview} onPointerDown={onPointerDown} onAnnotate={onAnnotate} onDoubleClick={onDoubleClick} onCommitText={onCommitText} onSelect={() => undefined} />);
@@ -1706,10 +1731,9 @@ type LeftPanelProps = {
   onToggleHidden: (id: string) => void;
   onToggleLocked: (id: string) => void;
   onReorderLayer: (id: string, beforeId: string | null) => void;
-  onCollapse: () => void;
 };
 
-function LeftPanel({ width, resizeActive, resizeMin, resizeMax, onResizeStart, onResizeKeyDown, files, activeFileId, onSwitchFile, onNewFile, onRenameFile, theme, onTheme, document, designs, activeDesign, assets, selectedAssetId, onSelectAsset, onUploadAssets, onPasteAsset, selectedIds, workingIds, pulseIds, revealRequest, onSelect, onSelectDesign, onToggleHidden, onToggleLocked, onReorderLayer, onCollapse }: LeftPanelProps) {
+function LeftPanel({ width, resizeActive, resizeMin, resizeMax, onResizeStart, onResizeKeyDown, files, activeFileId, onSwitchFile, onNewFile, onRenameFile, theme, onTheme, document, designs, activeDesign, assets, selectedAssetId, onSelectAsset, onUploadAssets, onPasteAsset, selectedIds, workingIds, pulseIds, revealRequest, onSelect, onSelectDesign, onToggleHidden, onToggleLocked, onReorderLayer }: LeftPanelProps) {
   const initialExpanded = designs.flatMap((design) => getDescendantIds(document, design.id)).filter((id) => document.nodes[id]?.type === 'frame');
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set([...designs.map((design) => design.id), ...initialExpanded]));
   const knownDesignIdsRef = useRef(new Set(designs.map((design) => design.id)));
@@ -1809,7 +1833,7 @@ function LeftPanel({ width, resizeActive, resizeMin, resizeMax, onResizeStart, o
 
   return <aside className="left-panel" style={{ width, minWidth: width }}>
     <div className="panel-heading">
-      <div className="sidebar-brand-row"><IconButton className="panel-collapse-button" label="Hide Layers panel" onClick={onCollapse}><PanelLeftClose size={17} /></IconButton><button className="brand-mark" type="button" title="Easel" aria-label="Easel"><span className="brand-glyph" />Easel</button></div>
+      <div className="sidebar-brand-row"><button className="brand-mark" type="button" title="Easel" aria-label="Easel"><span className="brand-glyph" />Easel</button><IconButton className="theme-toggle" label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`} onClick={() => onTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}</IconButton></div>
       <div className="file-selector-field"><select className="file-selector" aria-label="Current File" value={activeFileId} onChange={handleFileChange}>{files.map((file) => <option key={file.id} value={file.id}>{file.name}</option>)}<option value="__new_file__">New File</option><option value="__rename_file__">Rename current File</option></select></div>
     </div>
     <div className="panel-tabs" role="tablist" aria-label="Panel views"><button type="button" role="tab" aria-selected={panelTab === 'layers'} className={panelTab === 'layers' ? 'is-active' : ''} onClick={() => setPanelTab('layers')}><Layers3 size={14} />Layers</button><button type="button" role="tab" aria-selected={panelTab === 'assets'} className={panelTab === 'assets' ? 'is-active' : ''} onClick={() => setPanelTab('assets')}><ImageIcon size={14} />Assets<span className="tab-count">{assets.length}</span></button></div>
@@ -1835,7 +1859,7 @@ function LeftPanel({ width, resizeActive, resizeMin, resizeMax, onResizeStart, o
       <div className="asset-grid">{visibleAssets.map((asset) => <button key={asset.id} type="button" className={`asset-card ${selectedAssetId === asset.id ? 'is-selected' : ''}`} draggable onClick={() => onSelectAsset(asset.id)} onDragStart={(event) => { event.dataTransfer.effectAllowed = 'copy'; event.dataTransfer.setData('application/x-easel-asset', asset.id); event.dataTransfer.setData('text/plain', asset.id); }} title="Select or drag into a Frame"><span className="asset-thumb"><img src={asset.dataUrl} alt="" draggable={false} /></span><span className="asset-name">{asset.originalName}</span><small>{asset.sourceLabel ?? 'Uploaded'}</small></button>)}{!visibleAssets.length && <div className="assets-empty"><ImageIcon size={18} /><span>{assets.length ? 'No Assets match this search.' : 'Upload or paste an image to build this library.'}</span></div>}</div>
       {selectedAsset && <div className="asset-preview"><img src={selectedAsset.dataUrl} alt={selectedAsset.originalName} /><div><strong>{selectedAsset.originalName}</strong><span>{selectedAsset.sourceLabel ?? 'Uploaded'} · {selectedAsset.naturalWidth} × {selectedAsset.naturalHeight}</span><small>Drag into a Frame to place</small></div></div>}
     </section>}
-    <div className="panel-footer"><button className="theme-toggle" type="button" onClick={() => onTheme(theme === 'dark' ? 'light' : 'dark')} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}><span className={`theme-dot ${theme === 'dark' ? 'dark-dot' : 'light-dot'}`} /><span>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</span></button><span className="revision-label">r{document.revision}</span></div>
+    <div className="panel-footer"><span className="revision-label">r{document.revision}</span></div>
     <div className={`panel-resize-handle ${resizeActive ? 'is-active' : ''}`} role="separator" aria-label="Resize canvas panel" aria-orientation="vertical" aria-valuemin={resizeMin} aria-valuemax={resizeMax} aria-valuenow={width} aria-valuetext={`${width} pixels`} tabIndex={0} onPointerDown={onResizeStart} onKeyDown={onResizeKeyDown} title="Resize canvas panel" />
   </aside>;
 }

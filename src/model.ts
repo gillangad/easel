@@ -45,6 +45,7 @@ export const DEFAULT_VIEWPORT: Viewport = {
 export const LEFT_PANEL_DEFAULT_WIDTH = 244;
 export const LEFT_PANEL_MIN_WIDTH = 200;
 export const LEFT_PANEL_MAX_WIDTH = 420;
+export const LEFT_PANEL_COLLAPSE_THRESHOLD = 128;
 
 export const DEFAULT_PANELS: PanelsState = {
   leftOpen: true,
@@ -442,14 +443,25 @@ export function isDescendant(document: DocumentModel, nodeId: string, ancestorId
 }
 
 /**
- * Canvas clicks target the nearest top-level logical group. Layer-panel clicks
- * deliberately bypass this helper so children remain independently editable.
+ * Canvas clicks target an explicitly selected Frame first, so dragging a
+ * selected Frame from any descendant moves the whole Frame. Otherwise clicks
+ * target the nearest top-level logical group. Layer-panel clicks deliberately
+ * bypass this helper so children remain independently editable.
  */
 export function getCanvasSelectionId(document: DocumentModel, nodeId: string): string {
-  let current = document.nodes[nodeId];
+  const selectedIds = new Set(document.selection.ids);
+  let current: DesignNode | undefined = document.nodes[nodeId];
+  let selectedFrameId: string | undefined;
+  while (current) {
+    if (!selectedFrameId && selectedIds.has(current.id) && (current.type === 'artboard' || current.type === 'frame')) selectedFrameId = current.id;
+    current = current.parentId ? document.nodes[current.parentId] : undefined;
+  }
+  if (selectedFrameId) return selectedFrameId;
+
+  current = document.nodes[nodeId];
   let selectionId = nodeId;
   while (current?.parentId) {
-    const parent = document.nodes[current.parentId];
+    const parent: DesignNode | undefined = document.nodes[current.parentId];
     if (!parent) break;
     if (parent.type === 'frame' && (parent.isGroup || parent.name === 'Group')) selectionId = parent.id;
     current = parent;
