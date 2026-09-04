@@ -33,7 +33,7 @@ The included `vercel.json` and `public/_headers` add:
 - Deterministic Book Club starter content: `After Hours Book Club`, `Good books. Better conversations.`, `September 18 · 7:00 PM`, `The Reading Room`, and `Join the next gathering`, with shared `event.title`, `event.tagline`, `event.date`, `event.location`, and `event.image` bindings.
 - PNG preview/capture, SVG export, static HTML/CSS export, and JSON export. Static HTML is an export artifact, not production application code.
 
-## Site Tools
+## Website mock-up Tools
 
 When `document.modelContext.registerTool` is available, Easel registers these strict tools:
 
@@ -46,13 +46,14 @@ When `document.modelContext.registerTool` is available, Easel registers these st
 7. `write_frame`
 8. `insert_elements`
 9. `update_elements`
-10. `duplicate_elements`
-11. `delete_elements`
-12. `bind_context_fields`
-13. `apply_context_values`
-14. `import_and_place_asset`
-15. `validate_document`
-16. `export_frames`
+10. `annotate_elements`
+11. `duplicate_elements`
+12. `delete_elements`
+13. `bind_context_fields`
+14. `apply_context_values`
+15. `import_and_place_asset`
+16. `validate_document`
+17. `export_frames`
 
 Inputs use explicit File, Canvas, Frame, Layer, Asset, binding, geometry, style, layout, and shape fields with `additionalProperties: false`. Semantic updates accept one exact target per patch; ambiguous and missing targets return bounded candidate details. Inspection is filterable, paginated, and bounded. Mutations return the active File, stable IDs, changed/skipped/failed IDs, action labels, actual values, result bounds, and revision metadata. Registration owns one `AbortController` and aborts all handlers during cleanup.
 
@@ -87,7 +88,7 @@ Credentials and connector policy stay outside this shell; the visual result rema
 3. Use the Assets tab to inspect the original starter illustration, upload or paste a local image, and drag it into a Frame.
 4. Choose Shapes for rectangle, ellipse, line, arrow, or polygon placement; edit polygon sides and strokes in Inspector.
 5. Open Files to create, rename, switch, close, import, or reset the active File.
-6. Use a host that supports Site Tools to inspect, bind, apply context, validate, capture, and export through the same model.
+6. Use a host that supports Website mock-up Tools to inspect, annotate, bind, apply context, validate, capture, and export through the same model.
 
 ## Notes and limitations
 

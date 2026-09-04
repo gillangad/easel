@@ -305,6 +305,49 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 @keyframes changed-pulse { 0% { box-shadow: 0 0 0 0 rgba(59,130,246,.26); } 100% { box-shadow: 0 0 0 10px rgba(59,130,246,0); } }
 @keyframes layer-changed-pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-text-faint) 24%, transparent); } 100% { box-shadow: 0 0 0 8px transparent; } }
+
+/* Final polish: compact layout controls, anchored annotations, and quiet guides. */
+.sidebar-brand-row .panel-collapse-button { position: static; top: auto; right: auto; z-index: auto; box-shadow: none; }
+.sidebar-brand-row .panel-collapse-button:hover { box-shadow: none; }
+.snap-guides { position: absolute; inset: 0; z-index: 108; pointer-events: none; }
+.snap-guide { position: absolute; min-width: 1px; min-height: 1px; background: color-mix(in srgb, var(--color-active) 72%, transparent); opacity: .76; }
+.snap-guide-x { width: 1px; }
+.snap-guide-y { height: 1px; }
+.snap-guide:not(.is-spacing) { background-image: repeating-linear-gradient(to bottom, var(--color-active) 0 4px, transparent 4px 7px); background-color: transparent; }
+.snap-guide-y:not(.is-spacing) { background-image: repeating-linear-gradient(to right, var(--color-active) 0 4px, transparent 4px 7px); }
+.snap-guide.is-spacing { background: var(--color-text-faint); opacity: .68; }
+.snap-guide-label { position: absolute; display: inline-flex; align-items: center; justify-content: center; padding: 2px 4px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface-raised); color: var(--color-text-secondary); font-size: 9px; line-height: 1; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+.snap-guide-x .snap-guide-label { left: 4px; top: 50%; transform: translateY(-50%); }
+.snap-guide-y .snap-guide-label { left: 50%; top: 4px; transform: translateX(-50%); }
+
+.sizing-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+.segmented-field { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.segmented-control { min-width: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px; padding: 2px; border: 1px solid var(--color-border); border-radius: 7px; background: var(--color-surface-raised); }
+.segmented-control button { min-width: 0; min-height: 27px; padding: 0 3px; border-radius: 5px; background: transparent; color: var(--color-text-faint); font-size: 10px; }
+.segmented-control button:hover, .segmented-control button.is-selected { background: var(--color-surface-selected); color: var(--color-text-primary); }
+.segmented-control button.is-selected { box-shadow: inset 0 0 0 1px var(--color-border); font-weight: 500; }
+.layout-options { display: flex; flex-direction: column; gap: 9px; }
+.number-field.is-disabled { opacity: .66; }
+.number-input:disabled { cursor: not-allowed; background: var(--color-panel); color: var(--color-text-secondary); }
+
+.annotation-layer { position: absolute; inset: 0; z-index: 130; pointer-events: none; }
+.annotation-pin { position: absolute; width: 25px; height: 25px; display: inline-flex; align-items: center; justify-content: center; transform: translate(-50%, -50%); border: 1px solid color-mix(in srgb, var(--color-active) 52%, var(--color-border)); border-radius: 50%; background: var(--color-surface-raised); color: var(--color-active); box-shadow: 0 3px 12px rgba(0,0,0,.12); pointer-events: auto; transition: transform 140ms ease, background 140ms ease, color 140ms ease; }
+.annotation-pin:hover, .annotation-pin.is-open { transform: translate(-50%, -50%) scale(1.08); background: var(--color-surface-selected); color: var(--color-text-primary); }
+.annotation-pin.is-resolved { border-color: color-mix(in srgb, var(--color-success) 60%, var(--color-border)); color: var(--color-success); opacity: .78; }
+.annotation-popover-wrap { position: absolute; z-index: 2; max-width: calc(100% - 24px); transform: translate(9px, 9px); pointer-events: auto; }
+.annotation-popover { width: 238px; max-width: calc(100vw - 34px); padding: 10px; border: 1px solid var(--color-border); border-radius: 9px; background: var(--color-surface-raised); box-shadow: 0 10px 30px rgba(0,0,0,.14); color: var(--color-text-primary); }
+.annotation-popover-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 1px 0 8px; border-bottom: 1px solid var(--color-border); }
+.annotation-popover-heading > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.annotation-popover-heading strong { font-size: 12px; font-weight: 600; }
+.annotation-popover-heading span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-text-faint); font-size: 10px; }
+.annotation-popover-heading .icon-button { width: 25px; height: 25px; flex: 0 0 25px; }
+.annotation-editor { display: block; width: 100%; min-height: 66px; margin-top: 9px; resize: vertical; line-height: 1.4; }
+.annotation-popover-actions { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.annotation-popover-actions .secondary-button { min-height: 29px; padding: 0 8px; }
+.annotation-resolve-button { min-height: 29px; padding: 0 4px; gap: 4px; white-space: nowrap; }
+.annotation-delete-button { width: 29px; height: 29px; display: inline-flex; align-items: center; justify-content: center; margin-left: auto; border-radius: 6px; background: transparent; color: var(--color-text-faint); }
+.annotation-delete-button:hover { background: rgba(211,74,74,.1); color: var(--color-error); }
+.annotation-shortcut { display: block; margin-top: 8px; color: var(--color-text-faint); font-size: 9px; line-height: 1.3; }
 @keyframes agent-pulse { 0%, 100% { opacity: .46; } 50% { opacity: 1; } }
 @keyframes quiet-pulse { from { opacity: .45; } to { opacity: 1; } }
 

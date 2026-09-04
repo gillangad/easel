@@ -6,6 +6,7 @@ import {
   type EaselFile,
   type EditorState,
   type ImageAsset,
+  type LayerAnnotation,
   type LayoutStyle,
   type NodeStyle,
   type NodeType,
@@ -14,6 +15,7 @@ import {
   type Point,
   type Size,
   type SemanticTarget,
+  type SizingMode,
   type Viewport,
 } from './types';
 
@@ -183,11 +185,13 @@ export function defaultLayout(): LayoutStyle {
     alignItems: 'start',
     justifyContent: 'start',
     clipContent: false,
+    wrap: false,
   };
 }
 
 type MakeNodeInput = Pick<DesignNode, 'id' | 'type' | 'name' | 'pageId' | 'parentId' | 'x' | 'y' | 'width' | 'height'> & {
   isGroup?: boolean;
+  sizing?: DesignNode['sizing'];
   childIds?: string[];
   style?: Partial<NodeStyle>;
   layout?: Partial<LayoutStyle>;
@@ -197,6 +201,7 @@ type MakeNodeInput = Pick<DesignNode, 'id' | 'type' | 'name' | 'pageId' | 'paren
   hidden?: boolean;
   locked?: boolean;
   binding?: DesignNode['binding'];
+  annotations?: LayerAnnotation[];
   rotation?: number;
 };
 
@@ -214,6 +219,7 @@ export function makeNode(input: MakeNodeInput): DesignNode {
     width: input.width,
     height: input.height,
     rotation: input.rotation ?? 0,
+    sizing: input.sizing ? deepClone(input.sizing) : undefined,
     style: { ...defaultNodeStyle(input.type), ...input.style },
     layout: input.layout ? { ...defaultLayout(), ...input.layout } : input.type === 'artboard' || input.type === 'frame' ? defaultLayout() : undefined,
     shape: input.shape ? deepClone(input.shape) : input.type === 'polygon' ? { sides: 6 } : undefined,
@@ -222,6 +228,7 @@ export function makeNode(input: MakeNodeInput): DesignNode {
     hidden: input.hidden ?? false,
     locked: input.locked ?? false,
     binding: input.binding ? deepClone(input.binding) : undefined,
+    annotations: input.annotations ? deepClone(input.annotations) : undefined,
     updatedAt: nowIso(),
   };
 }
@@ -450,14 +457,202 @@ export function getCanvasSelectionId(document: DocumentModel, nodeId: string): s
   return selectionId;
 }
 
-function alignedOffset(parent: DesignNode, child: DesignNode, axisSize: number): number {
-  const contentSize = parent.layout?.mode === 'flex-row' || parent.layout?.mode === 'flex-column'
-    ? Math.max(0, axisSize - 2 * (parent.layout.padding ?? 0))
-    : axisSize;
-  if (parent.layout?.alignItems === 'center') return Math.max(0, (contentSize - child.height) / 2);
-  if (parent.layout?.alignItems === 'end') return Math.max(0, contentSize - child.height);
-  if (parent.layout?.alignItems === 'stretch') return 0;
-  return 0;
+const MAX_LAYOUT_DIMENSION = 20000;
+const MAX_LAYOUT_DEPTH = 100;
+const MAX_LAYOUT_PASSES = 4;
+
+function sizingMode(node: DesignNode, axis: 'width' | 'height'): SizingMode {
+  return node.sizing?.[axis] ?? 'fixed';
+}
+
+function clampLayoutDimension(value: number): number {
+  return Math.min(MAX_LAYOUT_DIMENSION, Math.max(1, Number.isFinite(value) ? value : 1));
+}
+
+function textMetrics(node: DesignNode, width: number): { width: number; height: number } {
+  const content = node.content ?? '';
+  const fontSize = Math.max(1, node.style.fontSize || 16);
+  const lineHeight = Math.max(.5, node.style.lineHeight || 1.2);
+  const letterWidth = Math.max(1, fontSize * .54 + node.style.letterSpacing);
+  const border = Math.max(0, node.style.borderWidth) * 2;
+  const naturalLines = content.split('\n').map((line) => line || ' ');
+  const naturalWidth = Math.max(1, ...naturalLines.map((line) => line.length * letterWidth + border));
+  const available = Math.max(1, width - border);
+  const maxChars = Math.max(1, Math.floor(available / letterWidth));
+  const lines = naturalLines.flatMap((line) => {
+    if (line.length <= maxChars) return [line];
+    const chunks: string[] = [];
+    for (let index = 0; index < line.length; index += maxChars) chunks.push(line.slice(index, index + maxChars));
+    return chunks;
+  });
+  return { width: clampLayoutDimension(naturalWidth), height: clampLayoutDimension(Math.max(fontSize * lineHeight + border, lines.length * fontSize * lineHeight + border)) };
+}
+
+function markLayoutChange(node: DesignNode, changed: Set<string>): void {
+  changed.add(node.id);
+  node.updatedAt = nowIso();
+}
+
+function setLayoutValue(node: DesignNode, key: 'x' | 'y' | 'width' | 'height', value: number, changed: Set<string>): void {
+  const next = key === 'x' || key === 'y' ? value : clampLayoutDimension(value);
+  if (Math.abs(node[key] - next) < .001) return;
+  node[key] = next;
+  markLayoutChange(node, changed);
+}
+
+function refreshIntrinsicNode(node: DesignNode, changed: Set<string>): void {
+  if (node.type !== 'text') return;
+  const metrics = textMetrics(node, node.width);
+  if (sizingMode(node, 'width') === 'hug') setLayoutValue(node, 'width', metrics.width, changed);
+  if (sizingMode(node, 'height') === 'hug') setLayoutValue(node, 'height', textMetrics(node, node.width).height, changed);
+}
+
+function childPreferredSize(node: DesignNode, axis: 'width' | 'height', parentAvailable: number | undefined, parentHugs: boolean): number {
+  if (node.type === 'text' && sizingMode(node, axis) === 'hug') {
+    const metrics = textMetrics(node, axis === 'width' ? node.width : node.width);
+    return axis === 'width' ? metrics.width : metrics.height;
+  }
+  if (sizingMode(node, axis) === 'fill' && parentAvailable !== undefined && !parentHugs) return parentAvailable;
+  return clampLayoutDimension(node[axis]);
+}
+
+function setChildFlowSize(node: DesignNode, width: number, height: number, changed: Set<string>): void {
+  if (sizingMode(node, 'width') === 'fill') setLayoutValue(node, 'width', width, changed);
+  else if (sizingMode(node, 'width') === 'hug' && node.type === 'text') setLayoutValue(node, 'width', textMetrics(node, node.width).width, changed);
+  if (sizingMode(node, 'height') === 'fill') setLayoutValue(node, 'height', height, changed);
+  else if (sizingMode(node, 'height') === 'hug' && node.type === 'text') setLayoutValue(node, 'height', textMetrics(node, node.width).height, changed);
+}
+
+function layoutRow(node: DesignNode, children: DesignNode[], changed: Set<string>): void {
+  const layout = node.layout ?? defaultLayout();
+  const padding = Math.max(0, layout.padding);
+  const gap = Math.max(0, layout.gap);
+  const widthHug = sizingMode(node, 'width') === 'hug';
+  const heightHug = sizingMode(node, 'height') === 'hug';
+  const preferredWidths = children.map((child) => childPreferredSize(child, 'width', undefined, widthHug));
+  let contentWidth = Math.max(0, node.width - padding * 2);
+  if (widthHug) {
+    const intrinsicWidth = preferredWidths.reduce((total, width) => total + width, 0) + Math.max(0, children.length - 1) * gap;
+    setLayoutValue(node, 'width', intrinsicWidth + padding * 2, changed);
+    contentWidth = Math.max(0, node.width - padding * 2);
+  }
+
+  const lines: DesignNode[][] = [];
+  let line: DesignNode[] = [];
+  let lineWidth = 0;
+  children.forEach((child, index) => {
+    const preferred = preferredWidths[index];
+    const nextWidth = line.length ? lineWidth + gap + preferred : preferred;
+    if (layout.wrap && !widthHug && line.length && nextWidth > contentWidth) {
+      lines.push(line);
+      line = [];
+      lineWidth = 0;
+    }
+    line.push(child);
+    lineWidth = line.length === 1 ? preferred : lineWidth + gap + preferred;
+  });
+  if (line.length) lines.push(line);
+
+  const lineHeights = lines.map((currentLine) => Math.max(1, ...currentLine.map((child) => childPreferredSize(child, 'height', undefined, heightHug))));
+  if (heightHug) {
+    const intrinsicHeight = lineHeights.reduce((total, height) => total + height, 0) + Math.max(0, lines.length - 1) * gap;
+    setLayoutValue(node, 'height', intrinsicHeight + padding * 2, changed);
+  }
+  const contentHeight = Math.max(0, node.height - padding * 2);
+  let cursorY = padding;
+  lines.forEach((currentLine, lineIndex) => {
+    const fixedWidth = currentLine.reduce((total, child) => total + (sizingMode(child, 'width') === 'fill' ? 0 : childPreferredSize(child, 'width', undefined, widthHug)), 0);
+    const fillCount = currentLine.filter((child) => sizingMode(child, 'width') === 'fill').length;
+    const availableForFill = Math.max(0, contentWidth - fixedWidth - Math.max(0, currentLine.length - 1) * gap);
+    const fillWidth = fillCount ? Math.max(1, availableForFill / fillCount) : 0;
+    const widths = currentLine.map((child) => sizingMode(child, 'width') === 'fill' && !widthHug ? fillWidth : childPreferredSize(child, 'width', undefined, widthHug));
+    const lineWidthValue = widths.reduce((total, width) => total + width, 0) + Math.max(0, currentLine.length - 1) * gap;
+    const free = Math.max(0, contentWidth - lineWidthValue);
+    const justifyOffset = layout.justifyContent === 'center' ? free / 2 : layout.justifyContent === 'end' ? free : 0;
+    const between = layout.justifyContent === 'space-between' && currentLine.length > 1 ? free / (currentLine.length - 1) : 0;
+    const baseLineHeight = lineHeights[lineIndex] ?? 1;
+    const lineHeight = layout.wrap ? baseLineHeight : Math.max(baseLineHeight, contentHeight);
+    let cursorX = padding + justifyOffset;
+    currentLine.forEach((child, index) => {
+      const width = widths[index];
+      const preferredHeight = childPreferredSize(child, 'height', undefined, heightHug);
+      const height = sizingMode(child, 'height') === 'fill' && !heightHug ? lineHeight : preferredHeight;
+      const crossOffset = layout.alignItems === 'center' ? Math.max(0, (lineHeight - height) / 2) : layout.alignItems === 'end' ? Math.max(0, lineHeight - height) : 0;
+      setChildFlowSize(child, width, height, changed);
+      setLayoutValue(child, 'x', cursorX, changed);
+      setLayoutValue(child, 'y', cursorY + crossOffset, changed);
+      cursorX += width + gap + between;
+    });
+    cursorY += lineHeight + gap;
+  });
+}
+
+function layoutColumn(node: DesignNode, children: DesignNode[], changed: Set<string>): void {
+  const layout = node.layout ?? defaultLayout();
+  const padding = Math.max(0, layout.padding);
+  const gap = Math.max(0, layout.gap);
+  const widthHug = sizingMode(node, 'width') === 'hug';
+  const heightHug = sizingMode(node, 'height') === 'hug';
+  const preferredWidths = children.map((child) => childPreferredSize(child, 'width', undefined, widthHug));
+  const preferredHeights = children.map((child) => childPreferredSize(child, 'height', undefined, heightHug));
+  if (widthHug) setLayoutValue(node, 'width', Math.max(1, ...preferredWidths) + padding * 2, changed);
+  if (heightHug) setLayoutValue(node, 'height', preferredHeights.reduce((total, height) => total + height, 0) + Math.max(0, children.length - 1) * gap + padding * 2, changed);
+  const contentWidth = Math.max(0, node.width - padding * 2);
+  const contentHeight = Math.max(0, node.height - padding * 2);
+  const fixedHeight = preferredHeights.reduce((total, height, index) => total + (sizingMode(children[index], 'height') === 'fill' ? 0 : height), 0);
+  const fillCount = children.filter((child) => sizingMode(child, 'height') === 'fill').length;
+  const availableForFill = Math.max(0, contentHeight - fixedHeight - Math.max(0, children.length - 1) * gap);
+  const fillHeight = fillCount ? Math.max(1, availableForFill / fillCount) : 0;
+  const totalHeight = children.reduce((total, child, index) => total + (sizingMode(child, 'height') === 'fill' && !heightHug ? fillHeight : preferredHeights[index]), 0) + Math.max(0, children.length - 1) * gap;
+  const free = Math.max(0, contentHeight - totalHeight);
+  const justifyOffset = layout.justifyContent === 'center' ? free / 2 : layout.justifyContent === 'end' ? free : 0;
+  const between = layout.justifyContent === 'space-between' && children.length > 1 ? free / (children.length - 1) : 0;
+  let cursorY = padding + justifyOffset;
+  children.forEach((child, index) => {
+    const preferredWidth = preferredWidths[index];
+    const width = sizingMode(child, 'width') === 'fill' && !widthHug ? contentWidth : preferredWidth;
+    const height = sizingMode(child, 'height') === 'fill' && !heightHug ? fillHeight : preferredHeights[index];
+    const crossOffset = layout.alignItems === 'center' ? Math.max(0, (contentWidth - width) / 2) : layout.alignItems === 'end' ? Math.max(0, contentWidth - width) : 0;
+    setChildFlowSize(child, width, height, changed);
+    setLayoutValue(child, 'x', padding + crossOffset, changed);
+    setLayoutValue(child, 'y', cursorY, changed);
+    cursorY += height + gap + between;
+  });
+}
+
+function layoutContainer(document: DocumentModel, node: DesignNode, changed: Set<string>): void {
+  const children = node.childIds.map((id) => document.nodes[id]).filter((child): child is DesignNode => Boolean(child && !child.hidden));
+  if (!children.length || !node.layout || node.layout.mode === 'free') return;
+  if (node.layout.mode === 'flex-row') layoutRow(node, children, changed);
+  else layoutColumn(node, children, changed);
+}
+
+/** Materialize opted-in flex layout into node geometry for bounds, persistence, and export. */
+export function materializeDocumentLayout(document: DocumentModel): string[] {
+  const changed = new Set<string>();
+  const visiting = new Set<string>();
+  const visit = (id: string, depth: number): void => {
+    if (depth > MAX_LAYOUT_DEPTH || visiting.has(id)) return;
+    const node = document.nodes[id];
+    if (!node) return;
+    visiting.add(id);
+    node.childIds.forEach((childId) => visit(childId, depth + 1));
+    refreshIntrinsicNode(node, changed);
+    if (node.layout?.mode !== 'free') {
+      for (let pass = 0; pass < MAX_LAYOUT_PASSES; pass += 1) {
+        const before = changed.size;
+        layoutContainer(document, node, changed);
+        node.childIds.forEach((childId) => {
+          const child = document.nodes[childId];
+          if (child && (child.type === 'text' || child.layout?.mode !== 'free')) visit(childId, depth + 1);
+        });
+        if (changed.size === before) break;
+      }
+    }
+    visiting.delete(id);
+  };
+  document.pages.forEach((page) => page.rootIds.forEach((id) => visit(id, 0)));
+  return [...changed];
 }
 
 export function getAbsolutePosition(document: DocumentModel, nodeId: string): Point {
@@ -466,30 +661,7 @@ export function getAbsolutePosition(document: DocumentModel, nodeId: string): Po
   const parent = document.nodes[node.parentId];
   if (!parent) return { x: node.x, y: node.y };
   const parentPosition = getAbsolutePosition(document, parent.id);
-  const mode = parent.layout?.mode ?? 'free';
-  if (mode === 'free') return { x: parentPosition.x + node.x, y: parentPosition.y + node.y };
-  const childIndex = parent.childIds.indexOf(node.id);
-  const visibleSiblings = parent.childIds.slice(0, childIndex).map((id) => document.nodes[id]).filter((candidate): candidate is DesignNode => Boolean(candidate && !candidate.hidden));
-  const gap = parent.layout?.gap ?? 0;
-  const padding = parent.layout?.padding ?? 0;
-  const mainOffset = visibleSiblings.reduce((total, sibling) => total + (mode === 'flex-row' ? sibling.width : sibling.height) + gap, 0);
-  let justifyOffset = 0;
-  const allVisible = parent.childIds.map((id) => document.nodes[id]).filter((candidate): candidate is DesignNode => Boolean(candidate && !candidate.hidden));
-  const totalMain = allVisible.reduce((total, sibling) => total + (mode === 'flex-row' ? sibling.width : sibling.height), 0) + Math.max(0, allVisible.length - 1) * gap;
-  const availableMain = Math.max(0, (mode === 'flex-row' ? parent.width : parent.height) - padding * 2);
-  if (parent.layout?.justifyContent === 'center') justifyOffset = Math.max(0, (availableMain - totalMain) / 2);
-  if (parent.layout?.justifyContent === 'end') justifyOffset = Math.max(0, availableMain - totalMain);
-  if (parent.layout?.justifyContent === 'space-between' && allVisible.length > 1) {
-    const extra = Math.max(0, availableMain - allVisible.reduce((total, sibling) => total + (mode === 'flex-row' ? sibling.width : sibling.height), 0));
-    justifyOffset = 0;
-    const between = extra / (allVisible.length - 1);
-    const siblingIndex = visibleSiblings.length;
-    const extraBefore = siblingIndex * (between - gap);
-    if (mode === 'flex-row') return { x: parentPosition.x + padding + mainOffset + justifyOffset + extraBefore, y: parentPosition.y + padding + alignedOffset(parent, node, parent.height) };
-    return { x: parentPosition.x + padding + alignedOffset(parent, node, parent.width), y: parentPosition.y + padding + mainOffset + justifyOffset + extraBefore };
-  }
-  if (mode === 'flex-row') return { x: parentPosition.x + padding + mainOffset + justifyOffset, y: parentPosition.y + padding + alignedOffset(parent, node, parent.height) };
-  return { x: parentPosition.x + padding + alignedOffset(parent, node, parent.width), y: parentPosition.y + padding + mainOffset + justifyOffset };
+  return { x: parentPosition.x + node.x, y: parentPosition.y + node.y };
 }
 
 export function getAbsoluteRect(document: DocumentModel, nodeId: string): { x: number; y: number; width: number; height: number; rotation: number } {

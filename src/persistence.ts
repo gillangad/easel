@@ -1,4 +1,4 @@
-import { createInitialDocument, createInitialState, deepClone, normalizePanels, nowIso, syncActiveFile } from './model';
+import { createInitialDocument, createInitialState, deepClone, materializeDocumentLayout, normalizePanels, nowIso, syncActiveFile } from './model';
 import { replaceDocumentState } from './commands';
 import type { DocumentModel, EaselFile, EditorState, PanelsState, ThemeMode } from './types';
 
@@ -41,9 +41,30 @@ function normalizeDocument(value: DocumentModel): DocumentModel {
       letterSpacing: typeof node.style?.letterSpacing === 'number' ? node.style.letterSpacing : 0,
       textAlign: node.style?.textAlign ?? 'left',
     };
+    if (node.layout) {
+      node.layout = {
+        mode: node.layout.mode === 'flex-row' || node.layout.mode === 'flex-column' ? node.layout.mode : 'free',
+        gap: typeof node.layout.gap === 'number' && Number.isFinite(node.layout.gap) ? Math.max(0, node.layout.gap) : 16,
+        padding: typeof node.layout.padding === 'number' && Number.isFinite(node.layout.padding) ? Math.max(0, node.layout.padding) : 24,
+        alignItems: node.layout.alignItems === 'center' || node.layout.alignItems === 'end' || node.layout.alignItems === 'stretch' ? node.layout.alignItems : 'start',
+        justifyContent: node.layout.justifyContent === 'center' || node.layout.justifyContent === 'end' || node.layout.justifyContent === 'space-between' ? node.layout.justifyContent : 'start',
+        clipContent: node.layout.clipContent === true,
+        wrap: node.layout.wrap === true,
+      };
+    }
+    if (node.sizing) {
+      node.sizing = {
+        width: node.sizing.width === 'hug' || node.sizing.width === 'fill' ? node.sizing.width : 'fixed',
+        height: node.sizing.height === 'hug' || node.sizing.height === 'fill' ? node.sizing.height : 'fixed',
+      };
+    }
+    node.annotations = Array.isArray(node.annotations)
+      ? node.annotations.filter((annotation): annotation is NonNullable<typeof node.annotations>[number] => isRecord(annotation) && typeof annotation.id === 'string' && typeof annotation.text === 'string' && typeof annotation.resolved === 'boolean').map((annotation) => ({ id: annotation.id, text: annotation.text.slice(0, 6000), resolved: annotation.resolved }))
+      : [];
     if (node.type === 'polygon' && (!node.shape || !Number.isFinite(node.shape.sides))) node.shape = { sides: 6 };
     node.childIds = Array.isArray(node.childIds) ? node.childIds.filter((id) => Boolean(document.nodes[id])) : [];
   });
+  materializeDocumentLayout(document);
   Object.values(document.assets).forEach((asset) => {
     asset.sourceLabel = asset.sourceLabel || 'Uploaded';
   });

@@ -8,6 +8,7 @@ import {
   type UpdateElementsInput,
   type WriteArtboardInput,
   CommandError,
+  resolveSelectionTarget,
   resolveSemanticTarget,
   tryDispatchCommand,
   validateDocumentModel,
@@ -23,6 +24,7 @@ import type {
   EaselFile,
   ImageAsset,
   ImageMetadata,
+  HistoryRequest,
   LayoutStyle,
   NodeStyle,
   SemanticTarget,
@@ -63,6 +65,7 @@ const FRAME_TYPE_SCHEMA = { type: 'string', enum: ['frame', 'text', 'rectangle',
 const SEMANTIC_TARGET_SCHEMA = {
   type: 'object',
   properties: {
+    selection: { type: 'boolean', const: true },
     fileId: ID_SCHEMA,
     fileName: { type: 'string', minLength: 1, maxLength: 120 },
     frameId: ID_SCHEMA,
@@ -108,7 +111,17 @@ const LAYOUT_SCHEMA = {
     alignItems: { type: 'string', enum: ['start', 'center', 'end', 'stretch'] },
     justifyContent: { type: 'string', enum: ['start', 'center', 'end', 'space-between'] },
     clipContent: { type: 'boolean' },
+    wrap: { type: 'boolean' },
   },
+  additionalProperties: false,
+};
+const SIZING_SCHEMA = {
+  type: 'object',
+  properties: {
+    width: { type: 'string', enum: ['fixed', 'hug', 'fill'] },
+    height: { type: 'string', enum: ['fixed', 'hug', 'fill'] },
+  },
+  required: ['width', 'height'],
   additionalProperties: false,
 };
 const IMAGE_SCHEMA = {
@@ -138,6 +151,7 @@ const ELEMENT_SCHEMA: Record<string, unknown> = {
     width: { type: 'number', minimum: 1, maximum: 20000 },
     height: { type: 'number', minimum: 1, maximum: 20000 },
     rotation: { type: 'number', minimum: -360, maximum: 360 },
+    sizing: SIZING_SCHEMA,
     content: { type: 'string', maxLength: 6000 },
     style: STYLE_SCHEMA,
     layout: LAYOUT_SCHEMA,
@@ -162,6 +176,7 @@ const PATCH_SCHEMA = {
     width: { type: 'number', minimum: 1, maximum: 20000 },
     height: { type: 'number', minimum: 1, maximum: 20000 },
     rotation: { type: 'number', minimum: -360, maximum: 360 },
+    sizing: { type: 'object', properties: { width: { type: 'string', enum: ['fixed', 'hug', 'fill'] }, height: { type: 'string', enum: ['fixed', 'hug', 'fill'] } }, minProperties: 1, additionalProperties: false },
     content: { type: 'string', maxLength: 6000 },
     style: STYLE_SCHEMA,
     layout: LAYOUT_SCHEMA,
@@ -194,7 +209,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       properties: {
         fileId: ID_SCHEMA,
         fileName: { type: 'string', minLength: 1, maxLength: 120 },
-        scope: { type: 'string', enum: ['file', 'frame', 'selection'] },
+        scope: { type: 'string', enum: ['file', 'frame', 'selection', 'annotations', 'history'] },
         frameId: ID_SCHEMA,
         frameName: { type: 'string', minLength: 1, maxLength: 120 },
         nodeIds: { type: 'array', maxItems: 20, items: ID_SCHEMA },
@@ -207,6 +222,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         maxTextChars: { type: 'integer', minimum: 20, maximum: 600 },
         offset: { type: 'integer', minimum: 0 },
         detail: { type: 'string', enum: ['compact', 'full'] },
+        includeResolved: { type: 'boolean' },
       },
       additionalProperties: false,
     },
@@ -264,9 +280,35 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'update_elements',
     title: 'Update Layers',
-    description: 'Apply granular text, geometry, typography, appearance, layout, shape, image, visibility, or lock patches in one undoable batch.',
-    inputSchema: { type: 'object', properties: { updates: { type: 'array', minItems: 1, maxItems: 50, items: PATCH_SCHEMA }, force: { type: 'boolean', description: 'Deliberately allow writes to locked Layers.' } }, required: ['updates'], additionalProperties: false },
+    description: 'Update Website mock-up Layers or use the explicit history branch to undo or redo the active File.',
+    inputSchema: { type: 'object', properties: { updates: { type: 'array', minItems: 1, maxItems: 50, items: PATCH_SCHEMA }, history: { type: 'object', properties: { action: { type: 'string', enum: ['undo', 'redo'] }, steps: { type: 'integer', minimum: 1, maximum: 20 } }, required: ['action', 'steps'], additionalProperties: false }, force: { type: 'boolean', description: 'Deliberately allow writes to locked Layers.' } }, oneOf: [{ required: ['updates'], not: { required: ['history'] } }, { required: ['history'], not: { required: ['updates'] } }], additionalProperties: false },
     annotations: { untrustedContentHint: true },
+  },
+  {
+    name: 'annotate_elements',
+    title: 'Annotate Layers',
+    description: 'Add, update, or delete a review note on one exact Website mock-up Layer, Frame, or current selection.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        nodeId: ID_SCHEMA,
+        target: SEMANTIC_TARGET_SCHEMA,
+        action: { type: 'string', enum: ['add', 'update', 'delete'] },
+        annotationId: ID_SCHEMA,
+        text: { type: 'string', maxLength: 6000 },
+        resolved: { type: 'boolean' },
+      },
+      required: ['action'],
+      oneOf: [
+        { required: ['nodeId'], not: { required: ['target'] } },
+        { required: ['target'], not: { required: ['nodeId'] } },
+      ],
+      allOf: [
+        { oneOf: [{ required: ['text'], properties: { action: { const: 'add' } } }, { required: ['annotationId'], properties: { action: { const: 'update' } } }, { required: ['annotationId'], properties: { action: { const: 'delete' } } }] },
+      ],
+      additionalProperties: false,
+    },
+    annotations: { untrustedContentHint: true, destructiveHint: true },
   },
   {
     name: 'duplicate_elements',
@@ -388,7 +430,7 @@ function parseStyle(value: unknown): Partial<NodeStyle> {
 
 function parseLayout(value: unknown): Partial<LayoutStyle> {
   const record = assertRecord(value, 'layout must be an object.');
-  assertKeys(record, ['mode', 'gap', 'padding', 'alignItems', 'justifyContent', 'clipContent']);
+  assertKeys(record, ['mode', 'gap', 'padding', 'alignItems', 'justifyContent', 'clipContent', 'wrap']);
   return {
     mode: record.mode === undefined ? undefined : requiredString(record, 'mode', 20) as LayoutStyle['mode'],
     gap: record.gap === undefined ? undefined : finiteNumber(record.gap, 'layout.gap', 0, 1000),
@@ -396,7 +438,36 @@ function parseLayout(value: unknown): Partial<LayoutStyle> {
     alignItems: record.alignItems === undefined ? undefined : requiredString(record, 'alignItems', 20) as LayoutStyle['alignItems'],
     justifyContent: record.justifyContent === undefined ? undefined : requiredString(record, 'justifyContent', 30) as LayoutStyle['justifyContent'],
     clipContent: record.clipContent === undefined ? undefined : bool(record.clipContent, 'layout.clipContent'),
+    wrap: record.wrap === undefined ? undefined : bool(record.wrap, 'layout.wrap'),
   };
+}
+
+function parseSizing(value: unknown, key = 'sizing'): { width: 'fixed' | 'hug' | 'fill'; height: 'fixed' | 'hug' | 'fill' } {
+  const record = assertRecord(value, `${key} must be an object.`);
+  assertKeys(record, ['width', 'height']);
+  const width = requiredString(record, 'width', 10);
+  const height = requiredString(record, 'height', 10);
+  if (!['fixed', 'hug', 'fill'].includes(width) || !['fixed', 'hug', 'fill'].includes(height)) throw new Error(`${key}.width and ${key}.height must be fixed, hug, or fill.`);
+  return { width: width as 'fixed' | 'hug' | 'fill', height: height as 'fixed' | 'hug' | 'fill' };
+}
+
+function parseSizingPatch(value: unknown): Partial<{ width: 'fixed' | 'hug' | 'fill'; height: 'fixed' | 'hug' | 'fill' }> | undefined {
+  if (value === undefined) return undefined;
+  const record = assertRecord(value, 'sizing must be an object.');
+  assertKeys(record, ['width', 'height']);
+  const result: Partial<{ width: 'fixed' | 'hug' | 'fill'; height: 'fixed' | 'hug' | 'fill' }> = {};
+  if (record.width !== undefined) {
+    const width = requiredString(record, 'width', 10);
+    if (!['fixed', 'hug', 'fill'].includes(width)) throw new Error('sizing.width must be fixed, hug, or fill.');
+    result.width = width as 'fixed' | 'hug' | 'fill';
+  }
+  if (record.height !== undefined) {
+    const height = requiredString(record, 'height', 10);
+    if (!['fixed', 'hug', 'fill'].includes(height)) throw new Error('sizing.height must be fixed, hug, or fill.');
+    result.height = height as 'fixed' | 'hug' | 'fill';
+  }
+  if (!Object.keys(result).length) throw new Error('sizing needs width or height.');
+  return result;
 }
 
 function parseShape(value: unknown): { sides?: number } {
@@ -430,7 +501,7 @@ function parseBinding(value: unknown): ElementSpec['binding'] | undefined {
 
 function parseElement(value: unknown, count: { value: number }): ElementSpec {
   const record = assertRecord(value, 'Every element must be an object.');
-  assertKeys(record, ['type', 'name', 'x', 'y', 'width', 'height', 'rotation', 'content', 'style', 'layout', 'shape', 'image', 'hidden', 'locked', 'binding', 'children']);
+  assertKeys(record, ['type', 'name', 'x', 'y', 'width', 'height', 'rotation', 'sizing', 'content', 'style', 'layout', 'shape', 'image', 'hidden', 'locked', 'binding', 'children']);
   count.value += 1;
   if (count.value > 100) throw new Error('The element tree may contain at most 100 Layers.');
   const type = requiredString(record, 'type', 20) as ElementSpec['type'];
@@ -448,6 +519,7 @@ function parseElement(value: unknown, count: { value: number }): ElementSpec {
     width: finiteNumber(record.width, 'width', 1, 20000),
     height: finiteNumber(record.height, 'height', 1, 20000),
     rotation: record.rotation === undefined ? undefined : finiteNumber(record.rotation, 'rotation', -360, 360),
+    sizing: record.sizing === undefined ? undefined : parseSizing(record.sizing),
     content: exactContent(record, 'content'),
     style: record.style === undefined ? undefined : parseStyle(record.style),
     layout: record.layout === undefined ? undefined : parseLayout(record.layout),
@@ -468,10 +540,14 @@ function parseElements(value: unknown): ElementSpec[] {
 
 function parseSemanticTarget(value: unknown): SemanticTarget {
   const record = assertRecord(value, 'target must be an object.');
-  assertKeys(record, ['fileId', 'fileName', 'frameId', 'frameName', 'name', 'type', 'content', 'bindingKey']);
+  assertKeys(record, ['selection', 'fileId', 'fileName', 'frameId', 'frameName', 'name', 'type', 'content', 'bindingKey']);
+  const selection = record.selection === undefined ? undefined : bool(record.selection, 'target.selection');
+  if (selection === false) throw new Error('target.selection must be true when provided.');
+  if (selection && Object.keys(record).some((key) => key !== 'selection')) throw new Error('target.selection is mutually exclusive with other target selectors.');
   const type = record.type === undefined ? undefined : requiredString(record, 'type', 20);
   if (type !== undefined && !['frame', 'text', 'rectangle', 'ellipse', 'line', 'arrow', 'polygon', 'image'].includes(type)) throw new Error('type must be frame, text, rectangle, ellipse, line, arrow, polygon, or image.');
   const target: SemanticTarget = {
+    selection,
     fileId: optionalString(record, 'fileId'),
     fileName: optionalString(record, 'fileName'),
     frameId: optionalString(record, 'frameId'),
@@ -481,13 +557,13 @@ function parseSemanticTarget(value: unknown): SemanticTarget {
     content: exactContent(record, 'content'),
     bindingKey: optionalString(record, 'bindingKey', 80),
   };
-  if (!target.frameId && !target.frameName && !target.name && target.content === undefined && !target.bindingKey) throw new Error('target needs frameId, frameName, name, content, or bindingKey.');
+  if (!target.selection && !target.frameId && !target.frameName && !target.name && target.content === undefined && !target.bindingKey) throw new Error('target needs selection, frameId, frameName, name, content, or bindingKey.');
   return target;
 }
 
 function parsePatch(value: unknown): ElementPatch {
   const record = assertRecord(value, 'Each update must be an object.');
-  assertKeys(record, ['id', 'target', 'name', 'x', 'y', 'width', 'height', 'rotation', 'content', 'style', 'layout', 'shape', 'image', 'parentId', 'hidden', 'locked']);
+  assertKeys(record, ['id', 'target', 'name', 'x', 'y', 'width', 'height', 'rotation', 'sizing', 'content', 'style', 'layout', 'shape', 'image', 'parentId', 'hidden', 'locked']);
   const hasId = record.id !== undefined;
   const hasTarget = record.target !== undefined;
   if (hasId === hasTarget) throw new Error('Each update needs exactly one of id or target.');
@@ -498,6 +574,7 @@ function parsePatch(value: unknown): ElementPatch {
     width: record.width === undefined ? undefined : finiteNumber(record.width, 'width', 1, 20000),
     height: record.height === undefined ? undefined : finiteNumber(record.height, 'height', 1, 20000),
     rotation: record.rotation === undefined ? undefined : finiteNumber(record.rotation, 'rotation', -360, 360),
+    sizing: parseSizingPatch(record.sizing),
     content: exactContent(record, 'content'),
     style: record.style === undefined ? undefined : parseStyle(record.style),
     layout: record.layout === undefined ? undefined : parseLayout(record.layout),
@@ -540,9 +617,56 @@ function parseInsert(input: unknown): InsertElementsInput {
 
 function parseUpdate(input: unknown): UpdateElementsInput {
   const record = assertRecord(input);
-  assertKeys(record, ['updates', 'force']);
+  assertKeys(record, ['updates', 'history', 'force']);
+  const hasUpdates = record.updates !== undefined;
+  const hasHistory = record.history !== undefined;
+  if (hasUpdates === hasHistory) throw new Error('Provide exactly one of updates or history.');
+  const force = record.force === undefined ? false : bool(record.force, 'force');
+  if (hasHistory) {
+    const history = assertRecord(record.history, 'history must be an object.');
+    assertKeys(history, ['action', 'steps']);
+    const action = requiredString(history, 'action', 10);
+    if (action !== 'undo' && action !== 'redo') throw new Error('history.action must be undo or redo.');
+    const steps = Math.round(finiteNumber(history.steps, 'history.steps', 1, 20));
+    if (steps < 1 || steps > 20 || !Number.isInteger(history.steps)) throw new Error('history.steps must be a positive integer between 1 and 20.');
+    return { history: { action, steps } as HistoryRequest, force };
+  }
   if (!Array.isArray(record.updates) || !record.updates.length || record.updates.length > 50) throw new Error('updates must contain between 1 and 50 items.');
-  return { updates: record.updates.map(parsePatch), force: record.force === undefined ? false : bool(record.force, 'force') };
+  return { updates: record.updates.map(parsePatch), force };
+}
+
+function parseAnnotation(input: unknown, document: DocumentModel): Command {
+  const record = assertRecord(input, 'Annotation input must be an object.');
+  assertKeys(record, ['nodeId', 'target', 'action', 'annotationId', 'text', 'resolved']);
+  const hasNodeId = record.nodeId !== undefined;
+  const hasTarget = record.target !== undefined;
+  if (hasNodeId === hasTarget) throw new Error('Provide exactly one of nodeId or target.');
+  const nodeId = hasNodeId
+    ? requiredString(record, 'nodeId')
+    : (() => {
+      const target = parseSemanticTarget(record.target);
+      return target.selection ? resolveSelectionTarget(document) : resolveSemanticTarget(document, target);
+    })();
+  const action = requiredString(record, 'action', 10);
+  if (!['add', 'update', 'delete'].includes(action)) throw new Error('action must be add, update, or delete.');
+  const annotationId = record.annotationId === undefined ? undefined : requiredString(record, 'annotationId');
+  const text = record.text === undefined ? undefined : exactContent(record, 'text', 6000);
+  const resolved = record.resolved === undefined ? undefined : bool(record.resolved, 'resolved');
+  if (action === 'add') {
+    if (annotationId !== undefined || resolved !== undefined || text === undefined) throw new Error('add requires text and does not accept annotationId or resolved.');
+    return { type: 'add-annotation', nodeId, text, source: 'agent' };
+  }
+  if (!annotationId) throw new Error(`${action} requires annotationId.`);
+  if (action === 'delete') {
+    if (text !== undefined || resolved !== undefined) throw new Error('delete only accepts annotationId.');
+    return { type: 'delete-annotation', nodeId, annotationId, source: 'agent' };
+  }
+  if (text === undefined && resolved === undefined) throw new Error('update requires text or resolved.');
+  return { type: 'update-annotation', nodeId, annotationId, text, resolved, source: 'agent' };
+}
+
+function resolveParsedTarget(document: DocumentModel, target: SemanticTarget): string {
+  return target.selection ? resolveSelectionTarget(document) : resolveSemanticTarget(document, target);
 }
 
 function parseIds(input: unknown, field = 'ids', maximum = 20): string[] {
@@ -587,7 +711,7 @@ function parseBindings(input: unknown, document: DocumentModel): Array<{ nodeId:
   return record.bindings.map((raw) => {
     const binding = assertRecord(raw);
     assertKeys(binding, ['nodeId', 'target', 'key', 'sourceLabel']);
-    const nodeId = binding.nodeId === undefined ? resolveSemanticTarget(document, parseSemanticTarget(binding.target)) : requiredString(binding, 'nodeId');
+    const nodeId = binding.nodeId === undefined ? resolveParsedTarget(document, parseSemanticTarget(binding.target)) : requiredString(binding, 'nodeId');
     return { nodeId, key: requiredString(binding, 'key', 80), sourceLabel: optionalString(binding, 'sourceLabel', 120) };
   });
 }
@@ -633,10 +757,11 @@ function normalizeType(type: DesignNode['type']): string {
   return type === 'artboard' ? 'frame' : type;
 }
 
-function nodeSummary(document: DocumentModel, node: DesignNode, maxTextChars: number, detail: 'compact' | 'full' = 'compact'): Record<string, unknown> {
+function nodeSummary(document: DocumentModel, node: DesignNode, maxTextChars: number, detail: 'compact' | 'full' = 'compact', includeResolved = false): Record<string, unknown> {
   const frame = getArtboardForNode(document, node.id);
   const rect = getAbsoluteRect(document, node.id);
   const text = node.content === undefined ? undefined : node.content.length > maxTextChars ? `${node.content.slice(0, maxTextChars)}…` : node.content;
+  const annotations = (node.annotations ?? []).filter((annotation) => includeResolved || !annotation.resolved).map((annotation) => ({ ...annotation, nodeId: node.id }));
   const summary: Record<string, unknown> = {
     id: node.id,
     name: node.name,
@@ -650,10 +775,12 @@ function nodeSummary(document: DocumentModel, node: DesignNode, maxTextChars: nu
     hidden: node.hidden,
     locked: node.locked,
   };
+  if (annotations.length) summary.annotations = annotations;
   if (detail === 'full') {
     summary.childCount = node.childIds.length;
     summary.style = { ...node.style };
     summary.layout = node.layout;
+    summary.sizing = node.sizing;
     summary.shape = node.shape;
     summary.image = node.image ? { assetId: node.image.assetId, label: node.image.label, alt: node.image.alt, role: node.image.role } : undefined;
     summary.binding = node.binding ? { key: node.binding.key, sourceLabel: node.binding.sourceLabel, sharedValue: node.binding.sharedValue } : undefined;
@@ -681,7 +808,7 @@ function shortValue(value: unknown): unknown {
 function compactArrayItem(value: unknown, key: string): unknown {
   if (!isRecord(value)) return value;
   if (key === 'layers' || key === 'nodes' || key === 'changed') {
-    return { id: value.id, name: value.name, type: value.type, frame: value.frame, bounds: value.bounds, content: value.content, values: value.values, bindingKey: value.bindingKey };
+    return { id: value.id, name: value.name, type: value.type, frame: value.frame, bounds: value.bounds, content: value.content, values: value.values, bindingKey: value.bindingKey, annotations: value.annotations };
   }
   if (key === 'frames') return { id: value.id ?? value.frameId, name: value.name ?? value.frameName, type: 'frame', width: value.width, height: value.height, layerCount: value.layerCount };
   if (key === 'assets') return { assetId: value.assetId, name: value.name, source: value.source, type: value.type, dimensions: value.dimensions };
@@ -691,7 +818,7 @@ function compactArrayItem(value: unknown, key: string): unknown {
 
 function resultEnvelope(result: Record<string, unknown>, fallbackMessage: string): Record<string, unknown> {
   const state = result;
-  const core = ['ok', 'action', 'message', 'revision', 'file', 'fileId', 'fileName', 'canvas', 'targetIds', 'totalMatches', 'offset', 'returnedCount', 'returnedLayerCount', 'nextOffset', 'truncated', 'resultTruncated', 'changedCount', 'limits', 'counts', 'selection', 'changed', 'changedIds', 'skippedIds', 'failedIds', 'createdIds', 'deletedIds', 'mappings', 'frame', 'frameId', 'frameName', 'frameIds', 'frames', 'layers', 'assets', 'asset', 'assetId', 'layerId', 'layerName', 'bounds', 'dimensions', 'source', 'format', 'scale', 'files', 'snapshotId', 'previewOpen', 'exportReady', 'unsupportedStyles', 'deduplicated', 'error'];
+  const core = ['ok', 'action', 'message', 'revision', 'file', 'fileId', 'fileName', 'canvas', 'targetIds', 'totalMatches', 'offset', 'returnedCount', 'returnedLayerCount', 'nextOffset', 'truncated', 'resultTruncated', 'changedCount', 'limits', 'counts', 'selection', 'history', 'annotation', 'annotations', 'changed', 'changedIds', 'skippedIds', 'failedIds', 'createdIds', 'deletedIds', 'mappings', 'frame', 'frameId', 'frameName', 'frameIds', 'frames', 'layers', 'assets', 'asset', 'assetId', 'layerId', 'layerName', 'bounds', 'dimensions', 'source', 'format', 'scale', 'files', 'snapshotId', 'previewOpen', 'exportReady', 'unsupportedStyles', 'deduplicated', 'error'];
   return Object.fromEntries(core.filter((key) => state[key] !== undefined).map((key) => [key, state[key]]).concat(!state.message ? [['message', fallbackMessage]] : []));
 }
 
@@ -807,14 +934,32 @@ function inspectAssets(state: EditorState, input: unknown): ToolResult {
 
 function inspectDocument(state: EditorState, input: unknown): ToolResult {
   const record = assertRecord(input);
-  assertKeys(record, ['fileId', 'fileName', 'scope', 'frameId', 'frameName', 'nodeIds', 'name', 'type', 'content', 'bindingKey', 'maxFrames', 'maxLayers', 'maxTextChars', 'offset', 'detail']);
+  assertKeys(record, ['fileId', 'fileName', 'scope', 'frameId', 'frameName', 'nodeIds', 'name', 'type', 'content', 'bindingKey', 'maxFrames', 'maxLayers', 'maxTextChars', 'offset', 'detail', 'includeResolved']);
   const scope = record.scope === undefined ? 'file' : requiredString(record, 'scope', 20);
-  if (!['file', 'frame', 'selection'].includes(scope)) throw new Error('scope must be file, frame, or selection.');
+  if (!['file', 'frame', 'selection', 'annotations', 'history'].includes(scope)) throw new Error('scope must be file, frame, selection, annotations, or history.');
   const maxFrames = record.maxFrames === undefined ? 4 : Math.round(finiteNumber(record.maxFrames, 'maxFrames', 1, 8));
   const maxLayers = record.maxLayers === undefined ? 20 : Math.round(finiteNumber(record.maxLayers, 'maxLayers', 1, 80));
   const maxTextChars = record.maxTextChars === undefined ? 180 : Math.round(finiteNumber(record.maxTextChars, 'maxTextChars', 20, 600));
   const offset = record.offset === undefined ? 0 : Math.round(finiteNumber(record.offset, 'offset', 0, 100000));
   const detail = record.detail === 'full' ? 'full' : 'compact';
+  const includeResolved = record.includeResolved === undefined ? false : bool(record.includeResolved, 'includeResolved');
+  const file = currentFile(state);
+  if (scope === 'history') {
+    return boundResult({
+      ok: true,
+      message: 'History inspection completed.',
+      revision: state.document.revision,
+      file: fileSummary(file),
+      fileId: file.id,
+      fileName: file.name,
+      history: {
+        availableUndo: state.history.length,
+        availableRedo: state.future.length,
+        lastAction: state.lastAction,
+      },
+      selection: state.document.selection,
+    });
+  }
   const frameId = optionalString(record, 'frameId');
   const frameName = optionalString(record, 'frameName');
   const name = optionalString(record, 'name');
@@ -829,12 +974,11 @@ function inspectDocument(state: EditorState, input: unknown): ToolResult {
   const target: SemanticTarget = { frameId, frameName, name, type: record.type === undefined ? undefined : requiredString(record, 'type', 20) as SemanticTarget['type'], content, bindingKey };
   const requestedIds = Array.isArray(record.nodeIds) ? record.nodeIds.filter((id): id is string => typeof id === 'string') : undefined;
   const candidates = (requestedIds ? requestedIds.filter((id) => scopedIds.includes(id)) : scopedIds).map((id) => state.document.nodes[id]).filter((node): node is DesignNode => Boolean(node));
-  const filtered = candidates.filter((node) => matchesSemanticTarget(state.document, node, target));
-  const layers = filtered.slice(offset, offset + maxLayers).map((node) => nodeSummary(state.document, node, maxTextChars, detail));
+  const filtered = candidates.filter((node) => matchesSemanticTarget(state.document, node, target)).filter((node) => scope !== 'annotations' || (node.annotations ?? []).some((annotation) => includeResolved || !annotation.resolved));
+  const layers = filtered.slice(offset, offset + maxLayers).map((node) => nodeSummary(state.document, node, maxTextChars, detail, includeResolved));
   const nextOffset = offset + layers.length < filtered.length ? offset + layers.length : undefined;
-  const file = currentFile(state);
   const frames = getArtboards(state.document).slice(0, maxFrames).map((frame) => ({ id: frame.id, name: frame.name, type: 'frame', width: frame.width, height: frame.height, layerCount: getPageNodeIds(state.document, frame.pageId).filter((id) => getArtboardForNode(state.document, id)?.id === frame.id).length - 1 }));
-  return boundResult({ ok: true, message: 'File inspection completed.', revision: state.document.revision, file: fileSummary(file), fileId: file.id, fileName: file.name, canvas: { id: 'canvas', name: 'Canvas' }, frames, layers, selection: state.document.selection, totalMatches: filtered.length, offset, returnedCount: layers.length, returnedLayerCount: layers.length, nextOffset, limits: { maxFrames, maxLayers, maxTextChars, offset, detail }, truncated: nextOffset !== undefined });
+  return boundResult({ ok: true, message: scope === 'annotations' ? 'Annotation inspection completed.' : 'File inspection completed.', revision: state.document.revision, file: fileSummary(file), fileId: file.id, fileName: file.name, canvas: { id: 'canvas', name: 'Canvas' }, frames, layers, selection: state.document.selection, totalMatches: filtered.length, offset, returnedCount: layers.length, returnedLayerCount: layers.length, nextOffset, limits: { maxFrames, maxLayers, maxTextChars, offset, detail, includeResolved }, truncated: nextOffset !== undefined });
 }
 
 function supportedMime(mimeType: string): boolean {
@@ -895,7 +1039,7 @@ function parseFocus(input: unknown): string[] {
   return parseIds(record, 'ids', 8);
 }
 
-const MUTATING_TOOLS = new Set(['create_frame', 'write_frame', 'insert_elements', 'update_elements', 'duplicate_elements', 'delete_elements', 'bind_context_fields', 'apply_context_values', 'import_and_place_asset']);
+const MUTATING_TOOLS = new Set(['create_frame', 'write_frame', 'insert_elements', 'update_elements', 'annotate_elements', 'duplicate_elements', 'delete_elements', 'bind_context_fields', 'apply_context_values', 'import_and_place_asset']);
 
 function feedbackTargetIds(state: EditorState, name: string, input: unknown): string[] {
   const ids = new Set<string>();
@@ -921,9 +1065,19 @@ function feedbackTargetIds(state: EditorState, name: string, input: unknown): st
       if (!isRecord(raw)) return;
       add(raw.id ?? raw.nodeId);
       if (isRecord(raw.target)) {
-        try { add(resolveSemanticTarget(state.document, parseSemanticTarget(raw.target))); } catch { /* The command returns the useful target error. */ }
+        try { add(resolveParsedTarget(state.document, parseSemanticTarget(raw.target))); } catch { /* The command returns the useful target error. */ }
       }
     });
+    if (name === 'update_elements' && isRecord(record.history)) {
+      add(state.document.selection.primaryId);
+    }
+  } else if (name === 'annotate_elements') {
+    add(record.nodeId);
+    if (isRecord(record.target)) {
+      try {
+        add(resolveParsedTarget(state.document, parseSemanticTarget(record.target)));
+      } catch { /* The command returns the useful target error. */ }
+    }
   } else if (name === 'apply_context_values') {
     const keys = new Set(Array.isArray(record.values) ? record.values.filter(isRecord).map((item) => item.key).filter((key): key is string => typeof key === 'string') : []);
     Object.values(state.document.nodes).filter((node) => node.binding && keys.has(node.binding.key)).forEach((node) => add(node.id));
@@ -979,6 +1133,7 @@ export function createToolBridge(bridge: Bridge): { invoke: (name: string, input
         case 'write_frame': result = commitCommand(bridge, { type: 'write-artboard', ...parseWriteFrame(input), source: 'agent' }, name); break;
         case 'insert_elements': result = commitCommand(bridge, { type: 'insert-elements', ...parseInsert(input), source: 'agent' }, name); break;
         case 'update_elements': result = commitCommand(bridge, { type: 'update-elements', ...parseUpdate(input), source: 'agent' }, name); break;
+        case 'annotate_elements': result = commitCommand(bridge, parseAnnotation(input, state.document), name); break;
         case 'duplicate_elements': result = commitCommand(bridge, { type: 'duplicate-elements', ...parseDuplicate(input), source: 'agent' }, name); break;
         case 'delete_elements': result = commitCommand(bridge, { type: 'delete-elements', ...parseDelete(input), source: 'agent' }, name); break;
         case 'bind_context_fields': result = commitCommand(bridge, { type: 'bind-context', bindings: parseBindings(input, state.document), source: 'agent' }, name); break;
@@ -1005,7 +1160,7 @@ export function createToolBridge(bridge: Bridge): { invoke: (name: string, input
           result = boundResult({ ...exported, file: fileSummary(currentFile(bridge.getState())), fileId: bridge.getState().activeFileId, fileName: currentFile(bridge.getState()).name, frameIds: parsed.frameIds });
           break;
         }
-        default: result = errorResult(new Error(`Unknown Site Tool “${name}”.`), 'UNKNOWN_TOOL');
+        default: result = errorResult(new Error(`Unknown Website mock-up Tool “${name}”.`), 'UNKNOWN_TOOL');
       }
     } catch (error) {
       result = errorResult(error);
@@ -1040,7 +1195,7 @@ export async function registerWebMCPTools(bridge: Bridge): Promise<{ supported: 
     return { supported: true, registered: true, cleanup: () => controller.abort() };
   } catch (error) {
     controller.abort();
-    return { supported: true, registered: false, cleanup: () => undefined, error: error instanceof Error ? error.message : 'Site Tool registration failed.' };
+    return { supported: true, registered: false, cleanup: () => undefined, error: error instanceof Error ? error.message : 'Website mock-up Tool registration failed.' };
   }
 }
 

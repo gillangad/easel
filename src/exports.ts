@@ -149,7 +149,7 @@ function inlineCss(node: DesignNode, x: number, y: number, relative = true): str
   const justifyContent = layout?.justifyContent === 'start' ? 'flex-start' : layout?.justifyContent === 'end' ? 'flex-end' : layout?.justifyContent;
   const alignItems = layout?.alignItems === 'start' ? 'flex-start' : layout?.alignItems === 'end' ? 'flex-end' : layout?.alignItems;
   const layoutCss = layout && layout.mode !== 'free'
-    ? `display:flex;flex-direction:${layout.mode === 'flex-row' ? 'row' : 'column'};gap:${layout.gap}px;padding:${layout.padding}px;align-items:${alignItems};justify-content:${justifyContent};`
+    ? `display:flex;flex-direction:${layout.mode === 'flex-row' ? 'row' : 'column'};flex-wrap:${layout.wrap ? 'wrap' : 'nowrap'};gap:${layout.gap}px;padding:${layout.padding}px;align-items:${alignItems};justify-content:${justifyContent};`
     : '';
   return `${position}width:${node.width}px;height:${node.height}px;box-sizing:border-box;background:${style.fill};opacity:${style.opacity};border:${style.borderWidth}px ${style.borderStyle} ${style.borderColor};border-radius:${style.borderRadius}px;color:${style.color};font-family:${style.fontFamily};font-size:${style.fontSize}px;font-weight:${style.fontWeight};line-height:${style.lineHeight};letter-spacing:${style.letterSpacing}px;text-align:${style.textAlign};overflow:${layout?.clipContent ? 'hidden' : 'visible'};transform:rotate(${node.rotation}deg);${layoutCss}`;
 }

@@ -7,10 +7,13 @@ import {
   type ElementPatch,
   type ElementSpec,
   type HistoryEntry,
+  type HistoryRequest,
   type ImageMetadata,
   type ImageAsset,
+  type LayerAnnotation,
   type LayoutStyle,
   type MutationOutcome,
+  type NodeSizing,
   type NodeStyle,
   type NodeType,
   type Page,
@@ -38,6 +41,7 @@ import {
   hasSemanticTargetSelector,
   insertAfter,
   isDescendant,
+  materializeDocumentLayout,
   makeNode,
   makeSnapshotState,
   matchesSemanticTarget,
@@ -107,9 +111,11 @@ export type InsertElementsInput = InsertTarget & {
 };
 
 export type UpdateElementsInput = {
-  updates: ElementPatch[];
   force?: boolean;
-};
+} & (
+  { updates: ElementPatch[]; history?: never }
+  | { history: HistoryRequest; updates?: never }
+);
 
 export type DuplicateInput = {
   ids: string[];
@@ -161,6 +167,9 @@ export type Command =
   | { type: 'rename-node'; id: string; name: string; source?: ActionSource }
   | { type: 'toggle-hidden'; ids: string[]; hidden?: boolean; source?: ActionSource }
   | { type: 'toggle-locked'; ids: string[]; locked?: boolean; source?: ActionSource }
+  | { type: 'add-annotation'; nodeId: string; text: string; source?: ActionSource }
+  | { type: 'update-annotation'; nodeId: string; annotationId: string; text?: string; resolved?: boolean; source?: ActionSource }
+  | { type: 'delete-annotation'; nodeId: string; annotationId: string; source?: ActionSource }
   | { type: 'reorder-elements'; ids: string[]; direction: ReorderDirection; source?: ActionSource }
   | ({ type: 'reorder-layer'; source?: ActionSource } & LayerReorderInput)
   | { type: 'align-elements'; ids: string[]; alignment: 'left' | 'right' | 'top' | 'bottom' | 'horizontal-center' | 'vertical-center'; source?: ActionSource }
@@ -237,6 +246,8 @@ function makeMutation(
 ): EditorState {
   const document = deepClone(state.document);
   const outcome = mutate(document);
+  const layoutChangedIds = materializeDocumentLayout(document);
+  outcome.changedIds = uniqueIds([...outcome.changedIds, ...layoutChangedIds]);
   if (!outcome.changedIds.length && !outcome.skippedIds.length && !outcome.failedIds?.length) return state;
   const previous = makeSnapshotState(state);
   document.revision = state.document.revision + 1;
@@ -383,6 +394,24 @@ function validateLayoutPatch(layout: Partial<LayoutStyle> | undefined): Partial<
     if (typeof layout.clipContent !== 'boolean') throw new CommandError('INVALID_LAYOUT', 'clip-content must be boolean.');
     next.clipContent = layout.clipContent;
   }
+  if (layout.wrap !== undefined) {
+    if (typeof layout.wrap !== 'boolean') throw new CommandError('INVALID_LAYOUT', 'wrap must be boolean.');
+    next.wrap = layout.wrap;
+  }
+  return next;
+}
+
+function validateSizingPatch(sizing: Partial<NodeSizing> | undefined): Partial<NodeSizing> {
+  if (!sizing) return {};
+  const next: Partial<NodeSizing> = {};
+  if (sizing.width !== undefined) {
+    if (!['fixed', 'hug', 'fill'].includes(sizing.width)) throw new CommandError('INVALID_SIZING', 'width sizing must be fixed, hug, or fill.');
+    next.width = sizing.width;
+  }
+  if (sizing.height !== undefined) {
+    if (!['fixed', 'hug', 'fill'].includes(sizing.height)) throw new CommandError('INVALID_SIZING', 'height sizing must be fixed, hug, or fill.');
+    next.height = sizing.height;
+  }
   return next;
 }
 
@@ -469,6 +498,7 @@ function createElementFromSpec(document: DocumentModel, pageId: string, parentId
   if (!validNodeType(spec.type) || spec.type === 'artboard') throw new CommandError('INVALID_ELEMENT', 'Element type must be frame, text, rectangle, ellipse, line, arrow, polygon, or image inside a frame.');
   if (spec.type === 'text' && typeof spec.content !== 'string') throw new CommandError('INVALID_ELEMENT', 'Text elements need content.');
   if (spec.content !== undefined && spec.content.length > MAX_TEXT_LENGTH) throw new CommandError('INVALID_ELEMENT', `Text content must be at most ${MAX_TEXT_LENGTH} characters.`);
+  const sizing = validateSizingPatch(spec.sizing);
   const node = makeNode({
     id: createId(spec.type),
     type: spec.type,
@@ -480,6 +510,7 @@ function createElementFromSpec(document: DocumentModel, pageId: string, parentId
     width: ensureDimension(spec.width, 'width'),
     height: ensureDimension(spec.height, 'height'),
     rotation: ensureFinite(spec.rotation ?? 0, 'rotation', -360, 360),
+    sizing: spec.sizing ? { width: sizing.width ?? 'fixed', height: sizing.height ?? 'fixed' } : undefined,
     style: { ...defaultNodeStyle(spec.type), ...validateStylePatch(spec.style) },
     layout: spec.type === 'frame' ? { ...defaultLayout(), ...validateLayoutPatch(spec.layout) } : undefined,
     shape: spec.shape ? validateShapePatch(spec.shape) : undefined,
@@ -520,6 +551,10 @@ function patchNode(document: DocumentModel, node: DesignNode, patch: ElementPatc
   if (patch.width !== undefined) node.width = ensureDimension(patch.width, 'width');
   if (patch.height !== undefined) node.height = ensureDimension(patch.height, 'height');
   if (patch.rotation !== undefined) node.rotation = ensureFinite(patch.rotation, 'rotation', -360, 360);
+  if (patch.sizing !== undefined) {
+    const sizing = validateSizingPatch(patch.sizing);
+    node.sizing = { width: sizing.width ?? node.sizing?.width ?? 'fixed', height: sizing.height ?? node.sizing?.height ?? 'fixed' };
+  }
   if (patch.content !== undefined) {
     if (node.type !== 'text') throw new CommandError('INVALID_ELEMENT', `Only text elements accept content.`, [node.id]);
     if (patch.content.length > MAX_TEXT_LENGTH) throw new CommandError('INVALID_ELEMENT', `Text content must be at most ${MAX_TEXT_LENGTH} characters.`, [node.id]);
@@ -574,6 +609,7 @@ function cloneSubtree(document: DocumentModel, sourceId: string, offset: Point, 
   const clone = deepClone(source);
   clone.id = newId;
   clone.name = `${source.name} copy`;
+  clone.annotations = clone.annotations?.map((annotation) => ({ ...annotation, id: createId('annotation') }));
   clone.x += offset.x;
   clone.y += offset.y;
   clone.childIds = [];
@@ -616,6 +652,49 @@ function withSelection(state: EditorState, ids: string[], additive = false): Edi
 function updateSelectionAfterDeletion(document: DocumentModel): void {
   const ids = document.selection.ids.filter((id) => Boolean(document.nodes[id]));
   document.selection = { ids, primaryId: ids.includes(document.selection.primaryId ?? '') ? document.selection.primaryId : ids[ids.length - 1] ?? null };
+}
+
+function historyChangedIds(before: DocumentModel, after: DocumentModel): string[] {
+  const ids = new Set([...Object.keys(before.nodes), ...Object.keys(after.nodes)]);
+  return [...ids].filter((id) => JSON.stringify(before.nodes[id] ?? null) !== JSON.stringify(after.nodes[id] ?? null)).slice(0, 50);
+}
+
+function dispatchHistory(state: EditorState, request: HistoryRequest, source: ActionSource): EditorState {
+  if (!request || !['undo', 'redo'].includes(request.action) || !Number.isInteger(request.steps) || request.steps < 1 || request.steps > 20) {
+    throw new CommandError('INVALID_HISTORY', 'history.steps must be a positive integer between 1 and 20, and action must be undo or redo.');
+  }
+  let current = state;
+  let applied = 0;
+  const before = state.document;
+  while (applied < request.steps) {
+    if (request.action === 'undo') {
+      const entry = current.history[current.history.length - 1];
+      if (!entry) break;
+      const snapshot = makeSnapshotState(current);
+      const restored = restoreSnapshot(current, entry);
+      current = { ...restored, history: current.history.slice(0, -1), future: [{ ...snapshot, label: entry.label }, ...current.future], lastAction: null };
+    } else {
+      const entry = current.future[0];
+      if (!entry) break;
+      const snapshot = makeSnapshotState(current);
+      const restored = restoreSnapshot(current, entry);
+      current = { ...restored, history: [...current.history, { ...snapshot, label: entry.label }], future: current.future.slice(1), lastAction: null };
+    }
+    applied += 1;
+  }
+  if (!applied) throw new CommandError('HISTORY_EMPTY', `No ${request.action} history is available for the active File.`);
+  const available = { undo: current.history.length, redo: current.future.length };
+  current.lastAction = {
+    id: createId('action'),
+    label: `${request.action === 'undo' ? 'Undid' : 'Redid'} ${applied} change${applied === 1 ? '' : 's'}`,
+    source,
+    changedIds: historyChangedIds(before, current.document),
+    skippedIds: [],
+    failedIds: [],
+    result: { history: { action: request.action, steps: applied, availableUndo: available.undo, availableRedo: available.redo } },
+    at: Date.now(),
+  };
+  return current;
 }
 
 export function dispatchCommand(state: EditorState, command: Command): EditorState {
@@ -698,7 +777,9 @@ export function dispatchCommand(state: EditorState, command: Command): EditorSta
       case 'write-artboard':
         return makeMutation(state, 'Wrote frame', command.source ?? 'agent', (document) => writeArtboardMutation(document, command));
       case 'update-elements':
-        return makeMutation(state, 'Updated elements', command.source ?? 'human', (document) => updateElementsMutation(document, command));
+        return 'history' in command && command.history
+          ? dispatchHistory(state, command.history, command.source ?? 'human')
+          : makeMutation(state, 'Updated elements', command.source ?? 'human', (document) => updateElementsMutation(document, command));
       case 'duplicate-elements':
         return makeMutation(state, 'Duplicated elements', command.source ?? 'human', (document) => duplicateMutation(document, command));
       case 'delete-elements':
@@ -715,6 +796,12 @@ export function dispatchCommand(state: EditorState, command: Command): EditorSta
         return makeMutation(state, 'Changed visibility', command.source ?? 'human', (document) => toggleNodeProperty(document, command.ids, 'hidden', command.hidden, false));
       case 'toggle-locked':
         return makeMutation(state, 'Changed locks', command.source ?? 'human', (document) => toggleNodeProperty(document, command.ids, 'locked', command.locked, true));
+      case 'add-annotation':
+        return makeMutation(state, 'Added annotation', command.source ?? 'human', (document) => addAnnotationMutation(document, command.nodeId, command.text));
+      case 'update-annotation':
+        return makeMutation(state, 'Updated annotation', command.source ?? 'human', (document) => updateAnnotationMutation(document, command.nodeId, command.annotationId, command.text, command.resolved));
+      case 'delete-annotation':
+        return makeMutation(state, 'Deleted annotation', command.source ?? 'human', (document) => deleteAnnotationMutation(document, command.nodeId, command.annotationId));
       case 'reorder-elements':
         return makeMutation(state, 'Reordered elements', command.source ?? 'human', (document) => reorderMutation(document, command.ids, command.direction));
       case 'reorder-layer':
@@ -870,6 +957,7 @@ function changedValueRecord(node: DesignNode, patches: ElementPatch[]): Record<s
   if (has('width')) values.width = node.width;
   if (has('height')) values.height = node.height;
   if (has('rotation')) values.rotation = node.rotation;
+  if (has('sizing')) values.sizing = node.sizing ? deepClone(node.sizing) : undefined;
   if (has('content')) values.content = node.content;
   if (has('parentId')) values.parentId = node.parentId;
   if (has('hidden')) values.hidden = node.hidden;
@@ -889,13 +977,24 @@ function changedNodeRecord(document: DocumentModel, node: DesignNode, patches: E
   return { id: node.id, name: node.name, type: node.type === 'artboard' ? 'frame' : node.type, frame: artboard ? { id: artboard.id, name: artboard.name } : null, bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height, rotation: rect.rotation }, values: changedValueRecord(node, patches) };
 }
 
+export function resolveSelectionTarget(document: DocumentModel): string {
+  const ids = document.selection.ids.filter((id) => Boolean(document.nodes[id]));
+  if (!ids.length) throw new CommandError('SELECTION_EMPTY', 'The current selection is empty. Select one Layer or provide an explicit id.', []);
+  if (ids.length > 1) {
+    const candidates = ids.slice(0, 8).map((id) => ({ id, name: document.nodes[id]?.name, type: document.nodes[id]?.type }));
+    throw new CommandError('SELECTION_AMBIGUOUS', 'The current selection contains multiple Layers. Use explicit ids for a batch update.', ids, { candidates });
+  }
+  return ids[0];
+}
+
 function updateElementsMutation(document: DocumentModel, input: UpdateElementsInput): MutationOutcome {
-  if (!input.updates.length || input.updates.length > 50) throw new CommandError('TOO_MANY_UPDATES', 'Provide between 1 and 50 element updates.');
+  const updates = 'updates' in input ? input.updates : undefined;
+  if (!updates || !updates.length || updates.length > 50) throw new CommandError('TOO_MANY_UPDATES', 'Provide between 1 and 50 element updates.');
   const changedIds: string[] = [];
   const skippedIds: string[] = [];
   const failedIds: string[] = [];
-  const resolvedUpdates = input.updates.map((patch) => {
-    const id = patch.id ?? resolveSemanticTarget(document, patch.target);
+  const resolvedUpdates = updates.map((patch) => {
+    const id = patch.id ?? (patch.target.selection ? resolveSelectionTarget(document) : resolveSemanticTarget(document, patch.target));
     return { id, patch };
   });
   const patchesById = new Map<string, ElementPatch[]>();
@@ -920,6 +1019,7 @@ function updateElementsMutation(document: DocumentModel, input: UpdateElementsIn
       failedIds.push(node.id);
     }
   });
+  changedIds.push(...materializeDocumentLayout(document));
   const uniqueChangedIds = uniqueIds(changedIds);
   const changed = uniqueChangedIds.map((id) => changedNodeRecord(document, document.nodes[id], patchesById.get(id) ?? []));
   const result = { changed, changedCount: uniqueChangedIds.length };
@@ -977,6 +1077,45 @@ function toggleNodeProperty(document: DocumentModel, ids: string[], property: 'h
     }
   });
   return { document, changedIds, skippedIds, message: `Changed ${changedIds.length} layer${changedIds.length === 1 ? '' : 's'}` };
+}
+
+function annotationText(value: unknown): string {
+  if (typeof value !== 'string') throw new CommandError('INVALID_INPUT', 'Annotation text must be a string.');
+  if (value.length > MAX_TEXT_LENGTH) throw new CommandError('INVALID_INPUT', `Annotation text must be at most ${MAX_TEXT_LENGTH} characters.`);
+  return value;
+}
+
+function addAnnotationMutation(document: DocumentModel, nodeId: string, text: string): MutationOutcome {
+  const node = assertNode(document, nodeId);
+  const annotation: LayerAnnotation = { id: createId('annotation'), text: annotationText(text), resolved: false };
+  node.annotations = [...(node.annotations ?? []), annotation];
+  setNodeUpdated(node);
+  return { document, changedIds: [node.id], skippedIds: [], result: { annotation: { ...annotation, nodeId: node.id }, bounds: getAbsoluteRect(document, node.id) }, message: `Added annotation to ${node.name}` };
+}
+
+function updateAnnotationMutation(document: DocumentModel, nodeId: string, annotationId: string, text: string | undefined, resolved: boolean | undefined): MutationOutcome {
+  const node = assertNode(document, nodeId);
+  if (text === undefined && resolved === undefined) throw new CommandError('INVALID_INPUT', 'Provide text or resolved when updating an annotation.', [annotationId]);
+  const annotations = node.annotations ?? [];
+  const annotation = annotations.find((candidate) => candidate.id === annotationId);
+  if (!annotation) throw new CommandError('ANNOTATION_NOT_FOUND', `No annotation with the ID “${annotationId}” exists on ${node.name}.`, [node.id, annotationId]);
+  if (text !== undefined) annotation.text = annotationText(text);
+  if (resolved !== undefined) {
+    if (typeof resolved !== 'boolean') throw new CommandError('INVALID_INPUT', 'resolved must be boolean.', [annotationId]);
+    annotation.resolved = resolved;
+  }
+  node.annotations = annotations;
+  setNodeUpdated(node);
+  return { document, changedIds: [node.id], skippedIds: [], result: { annotation: { ...annotation, nodeId: node.id }, bounds: getAbsoluteRect(document, node.id) }, message: `Updated annotation on ${node.name}` };
+}
+
+function deleteAnnotationMutation(document: DocumentModel, nodeId: string, annotationId: string): MutationOutcome {
+  const node = assertNode(document, nodeId);
+  const annotations = node.annotations ?? [];
+  if (!annotations.some((candidate) => candidate.id === annotationId)) throw new CommandError('ANNOTATION_NOT_FOUND', `No annotation with the ID “${annotationId}” exists on ${node.name}.`, [node.id, annotationId]);
+  node.annotations = annotations.filter((candidate) => candidate.id !== annotationId);
+  setNodeUpdated(node);
+  return { document, changedIds: [node.id], skippedIds: [], result: { annotationId, nodeId: node.id, bounds: getAbsoluteRect(document, node.id) }, message: `Deleted annotation from ${node.name}` };
 }
 
 function reorderMutation(document: DocumentModel, ids: string[], direction: ReorderDirection): MutationOutcome {

@@ -2,6 +2,7 @@ export type ShapeKind = 'rectangle' | 'ellipse' | 'line' | 'arrow' | 'polygon';
 export type NodeType = 'artboard' | 'frame' | 'text' | ShapeKind | 'image';
 
 export type SemanticTarget = {
+  selection?: boolean;
   fileId?: string;
   fileName?: string;
   pageId?: string;
@@ -19,6 +20,7 @@ export type SemanticTarget = {
 export type LayoutMode = 'free' | 'flex-row' | 'flex-column';
 export type AlignItems = 'start' | 'center' | 'end' | 'stretch';
 export type JustifyContent = 'start' | 'center' | 'end' | 'space-between';
+export type SizingMode = 'fixed' | 'hug' | 'fill';
 export type ImageRole = 'reference' | 'content';
 export type ThemeMode = 'light' | 'dark';
 export type ActionSource = 'human' | 'agent';
@@ -61,6 +63,18 @@ export type LayoutStyle = {
   alignItems: AlignItems;
   justifyContent: JustifyContent;
   clipContent: boolean;
+  wrap: boolean;
+};
+
+export type NodeSizing = {
+  width: SizingMode;
+  height: SizingMode;
+};
+
+export type LayerAnnotation = {
+  id: string;
+  text: string;
+  resolved: boolean;
 };
 
 export type ImageMetadata = {
@@ -95,6 +109,7 @@ export type DesignNode = {
   width: number;
   height: number;
   rotation: number;
+  sizing?: NodeSizing;
   style: NodeStyle;
   layout?: LayoutStyle;
   shape?: {
@@ -105,6 +120,7 @@ export type DesignNode = {
   hidden: boolean;
   locked: boolean;
   binding?: BindingMetadata;
+  annotations?: LayerAnnotation[];
   updatedAt: string;
 };
 
@@ -270,6 +286,7 @@ export type ElementSpec = {
   width: number;
   height: number;
   rotation?: number;
+  sizing?: NodeSizing;
   content?: string;
   style?: Partial<NodeStyle>;
   layout?: Partial<LayoutStyle>;
@@ -288,6 +305,7 @@ type ElementPatchFields = {
   width?: number;
   height?: number;
   rotation?: number;
+  sizing?: Partial<NodeSizing>;
   content?: string;
   style?: Partial<NodeStyle>;
   layout?: Partial<LayoutStyle>;
@@ -302,3 +320,8 @@ export type ElementPatch = ElementPatchFields & (
   { id: string; target?: never }
   | { id?: never; target: SemanticTarget }
 );
+
+export type HistoryRequest = {
+  action: 'undo' | 'redo';
+  steps: number;
+};

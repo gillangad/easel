@@ -21,10 +21,10 @@ function makeHarness(initial = createInitialState(), withFeedback = false) {
   return { bridge, getState: () => state, starts, completions };
 }
 
-describe('Site Tool bridge', () => {
+describe('Website mock-up Tool bridge', () => {
   it('exposes the focused File/Frame surface with strict object schemas', () => {
     expect(TOOL_DEFINITIONS.map((tool) => tool.name)).toEqual([
-      'inspect_document', 'open_file', 'inspect_assets', 'focus_for_inspection', 'capture_frame', 'create_frame', 'write_frame', 'insert_elements', 'update_elements', 'duplicate_elements', 'delete_elements', 'bind_context_fields', 'apply_context_values', 'import_and_place_asset', 'validate_document', 'export_frames',
+      'inspect_document', 'open_file', 'inspect_assets', 'focus_for_inspection', 'capture_frame', 'create_frame', 'write_frame', 'insert_elements', 'update_elements', 'annotate_elements', 'duplicate_elements', 'delete_elements', 'bind_context_fields', 'apply_context_values', 'import_and_place_asset', 'validate_document', 'export_frames',
     ]);
     expect(toolSchemasAreStrict()).toBe(true);
     const updateSchema = TOOL_DEFINITIONS.find((tool) => tool.name === 'update_elements')?.inputSchema as { properties?: { updates?: { items?: { oneOf?: unknown[] } } } };
@@ -222,7 +222,7 @@ describe('Site Tool bridge', () => {
       export: async () => ({ ok: true }),
     });
     expect(result.registered).toBe(true);
-    expect(registrations).toHaveLength(16);
+    expect(registrations).toHaveLength(17);
     expect(registrations.map((item) => item.definition.name)).toEqual(TOOL_DEFINITIONS.map((tool) => tool.name));
     result.cleanup();
     expect(registrations[0].signal?.aborted).toBe(true);

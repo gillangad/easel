@@ -38,10 +38,12 @@ import {
   Image as ImageIcon,
   Layers3,
   Lock,
+  MessageSquarePlus,
   PanelLeft,
   PanelLeftClose,
   Palette,
   Plus,
+  RotateCcw,
   Redo2,
   Save,
   Scan,
@@ -95,15 +97,17 @@ import type {
   ElementPatch,
   ElementSpec,
   ImageAsset,
+  LayerAnnotation,
   LayoutMode,
   Point,
   PreviewState,
+  SizingMode,
   ThemeMode,
   Viewport,
   ShapeKind,
 } from './types';
 
-type ToolName = 'select' | 'pan' | 'add-frame' | 'text' | ShapeKind;
+type ToolName = 'select' | 'annotate' | 'pan' | 'add-frame' | 'text' | ShapeKind;
 type ToastKind = 'info' | 'success' | 'warning' | 'error';
 type ToastState = { kind: ToastKind; message: string };
 type PreviewTransform = { x: number; y: number; width: number; height: number; rotation: number };
@@ -112,6 +116,25 @@ type DragSession =
   | { kind: 'move'; startX: number; startY: number; ids: string[]; base: Record<string, PreviewTransform> }
   | { kind: 'resize'; startX: number; startY: number; nodeId: string; corner: string; base: PreviewTransform }
   | { kind: 'rotate'; startX: number; startY: number; nodeId: string; base: PreviewTransform; center: Point };
+
+type SnapGuide = {
+  axis: 'x' | 'y';
+  position: number;
+  start: number;
+  end: number;
+  label?: string;
+  kind?: 'alignment' | 'spacing';
+};
+
+type SnapResult = {
+  delta: Point;
+  guides: SnapGuide[];
+};
+
+type AnnotationTarget = {
+  nodeId: string;
+  annotationId?: string;
+};
 
 const FONT_OPTIONS = [
   'Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
@@ -123,6 +146,7 @@ const FONT_OPTIONS = [
 
 const TOOL_LABELS: Record<ToolName, string> = {
   select: 'Select',
+  annotate: 'Annotate',
   pan: 'Pan',
   'add-frame': 'Add Frame',
   rectangle: 'Rectangle',
@@ -301,6 +325,15 @@ function isEffectivelyLocked(document: DocumentModel, id: string): boolean {
   return false;
 }
 
+function isEffectivelyHidden(document: DocumentModel, id: string): boolean {
+  let node: DesignNode | undefined = document.nodes[id];
+  while (node) {
+    if (node.hidden) return true;
+    node = node.parentId ? document.nodes[node.parentId] : undefined;
+  }
+  return false;
+}
+
 function getSiblingIds(document: DocumentModel, node: DesignNode): string[] {
   if (node.parentId) return document.nodes[node.parentId]?.childIds ?? [];
   return getPage(document, node.pageId)?.rootIds ?? [];
@@ -317,6 +350,103 @@ function getBeforeIdForVisualDrop(document: DocumentModel, draggedId: string, ta
   const internal = visual.reverse();
   const nextIndex = internal.indexOf(draggedId);
   return nextIndex >= 0 ? internal[nextIndex + 1] ?? null : null;
+}
+
+function getSelectionRoots(document: DocumentModel, ids: string[]): string[] {
+  const unique = [...new Set(ids)].filter((id) => Boolean(document.nodes[id]));
+  const selected = new Set(unique);
+  return unique.filter((id) => {
+    let parentId = document.nodes[id]?.parentId ?? null;
+    while (parentId) {
+      if (selected.has(parentId)) return false;
+      parentId = document.nodes[parentId]?.parentId ?? null;
+    }
+    return true;
+  });
+}
+
+function getSnapTargetRects(document: DocumentModel, movingIds: string[]): Array<{ id: string; rect: ReturnType<typeof getAbsoluteRect> }> {
+  const movingTree = new Set<string>();
+  movingIds.forEach((id) => getDescendantIds(document, id).forEach((descendantId) => movingTree.add(descendantId)));
+  const targetIds = new Set<string>();
+  movingIds.forEach((id) => {
+    const node = document.nodes[id];
+    if (!node) return;
+    const siblings = node.parentId ? document.nodes[node.parentId]?.childIds : getPage(document, node.pageId)?.rootIds;
+    siblings?.forEach((candidateId) => {
+      if (!movingTree.has(candidateId)) targetIds.add(candidateId);
+    });
+    if (node.parentId && !movingTree.has(node.parentId)) targetIds.add(node.parentId);
+    const artboard = getArtboardForNode(document, id);
+    if (artboard && !movingTree.has(artboard.id)) targetIds.add(artboard.id);
+  });
+  return [...targetIds]
+    .map((id) => ({ id, rect: getAbsoluteRect(document, id) }))
+    .filter(({ rect }) => rect.width > 0 && rect.height > 0);
+}
+
+function getSnappedMove(document: DocumentModel, movingIds: string[], delta: Point): SnapResult {
+  const rects = movingIds.map((id) => getAbsoluteRect(document, id)).filter((rect) => rect.width > 0 && rect.height > 0);
+  if (!rects.length) return { delta, guides: [] };
+  const union = rects.reduce((result, rect) => ({
+    x: Math.min(result.x, rect.x),
+    y: Math.min(result.y, rect.y),
+    right: Math.max(result.right, rect.x + rect.width),
+    bottom: Math.max(result.bottom, rect.y + rect.height),
+  }), { x: rects[0].x, y: rects[0].y, right: rects[0].x + rects[0].width, bottom: rects[0].y + rects[0].height });
+  const proposed = { x: union.x + delta.x, y: union.y + delta.y, right: union.right + delta.x, bottom: union.bottom + delta.y };
+  const targets = getSnapTargetRects(document, movingIds);
+  const threshold = 8;
+  const movingX = [proposed.x, (proposed.x + proposed.right) / 2, proposed.right];
+  const movingY = [proposed.y, (proposed.y + proposed.bottom) / 2, proposed.bottom];
+  let bestX: { distance: number; adjustment: number; target: number; rect: ReturnType<typeof getAbsoluteRect> } | undefined;
+  let bestY: { distance: number; adjustment: number; target: number; rect: ReturnType<typeof getAbsoluteRect> } | undefined;
+  targets.forEach(({ rect }) => {
+    const targetX = [rect.x, (rect.x + rect.x + rect.width) / 2, rect.x + rect.width];
+    const targetY = [rect.y, (rect.y + rect.y + rect.height) / 2, rect.y + rect.height];
+    targetX.forEach((target) => movingX.forEach((moving) => {
+      const adjustment = target - moving;
+      const distance = Math.abs(adjustment);
+      if (distance <= threshold && (!bestX || distance < bestX.distance)) bestX = { distance, adjustment, target, rect };
+    }));
+    targetY.forEach((target) => movingY.forEach((moving) => {
+      const adjustment = target - moving;
+      const distance = Math.abs(adjustment);
+      if (distance <= threshold && (!bestY || distance < bestY.distance)) bestY = { distance, adjustment, target, rect };
+    }));
+  });
+  const snappedDelta = { x: delta.x + (bestX?.adjustment ?? 0), y: delta.y + (bestY?.adjustment ?? 0) };
+  const finalRect = { x: union.x + snappedDelta.x, y: union.y + snappedDelta.y, right: union.right + snappedDelta.x, bottom: union.bottom + snappedDelta.y };
+  const guides: SnapGuide[] = [];
+  if (bestX) guides.push({ axis: 'x', position: bestX.target, start: Math.min(finalRect.y, bestX.rect.y) - 12, end: Math.max(finalRect.bottom, bestX.rect.y + bestX.rect.height) + 12 });
+  if (bestY) guides.push({ axis: 'y', position: bestY.target, start: Math.min(finalRect.x, bestY.rect.x) - 12, end: Math.max(finalRect.right, bestY.rect.x + bestY.rect.width) + 12 });
+
+  const overlap = (startA: number, endA: number, startB: number, endB: number) => Math.min(endA, endB) - Math.max(startA, startB);
+  let nearestHorizontal: { gap: number; start: number; end: number; cross: number } | undefined;
+  let nearestVertical: { gap: number; start: number; end: number; cross: number } | undefined;
+  targets.forEach(({ rect }) => {
+    if (overlap(finalRect.y, finalRect.bottom, rect.y, rect.y + rect.height) > 0) {
+      if (rect.x >= finalRect.right) {
+        const gap = rect.x - finalRect.right;
+        if (gap > 0 && gap <= 240 && (!nearestHorizontal || gap < nearestHorizontal.gap)) nearestHorizontal = { gap, start: finalRect.right, end: rect.x, cross: Math.max(finalRect.y, rect.y) + overlap(finalRect.y, finalRect.bottom, rect.y, rect.y + rect.height) / 2 };
+      } else if (finalRect.x >= rect.x + rect.width) {
+        const gap = finalRect.x - (rect.x + rect.width);
+        if (gap > 0 && gap <= 240 && (!nearestHorizontal || gap < nearestHorizontal.gap)) nearestHorizontal = { gap, start: rect.x + rect.width, end: finalRect.x, cross: Math.max(finalRect.y, rect.y) + overlap(finalRect.y, finalRect.bottom, rect.y, rect.y + rect.height) / 2 };
+      }
+    }
+    if (overlap(finalRect.x, finalRect.right, rect.x, rect.x + rect.width) > 0) {
+      if (rect.y >= finalRect.bottom) {
+        const gap = rect.y - finalRect.bottom;
+        if (gap > 0 && gap <= 240 && (!nearestVertical || gap < nearestVertical.gap)) nearestVertical = { gap, start: finalRect.bottom, end: rect.y, cross: Math.max(finalRect.x, rect.x) + overlap(finalRect.x, finalRect.right, rect.x, rect.x + rect.width) / 2 };
+      } else if (finalRect.y >= rect.y + rect.height) {
+        const gap = finalRect.y - (rect.y + rect.height);
+        if (gap > 0 && gap <= 240 && (!nearestVertical || gap < nearestVertical.gap)) nearestVertical = { gap, start: rect.y + rect.height, end: finalRect.y, cross: Math.max(finalRect.x, rect.x) + overlap(finalRect.x, finalRect.right, rect.x, rect.x + rect.width) / 2 };
+      }
+    }
+  });
+  if (nearestHorizontal) guides.push({ axis: 'y', position: nearestHorizontal.cross, start: nearestHorizontal.start, end: nearestHorizontal.end, label: `${Math.round(nearestHorizontal.gap)} px`, kind: 'spacing' });
+  if (nearestVertical) guides.push({ axis: 'x', position: nearestVertical.cross, start: nearestVertical.start, end: nearestVertical.end, label: `${Math.round(nearestVertical.gap)} px`, kind: 'spacing' });
+  return { delta: snappedDelta, guides: guides.slice(0, 4) };
 }
 
 function viewportKeepingNodeVisible(document: DocumentModel, id: string, stageWidth: number, stageHeight: number): Viewport | null {
@@ -357,9 +487,11 @@ export default function App() {
   const [layerRevealRequest, setLayerRevealRequest] = useState<{ token: number; ids: string[] }>({ token: 0, ids: [] });
   const [lastActiveDesignId, setLastActiveDesignId] = useState<string | null>(null);
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
+  const [annotationTarget, setAnnotationTarget] = useState<AnnotationTarget | null>(null);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [dragPreview, setDragPreview] = useState<Record<string, PreviewTransform>>({});
+  const [dragGuides, setDragGuides] = useState<SnapGuide[]>([]);
   const dragPreviewRef = useRef<Record<string, PreviewTransform>>({});
   const dragFrameRef = useRef<number | null>(null);
   const dragRef = useRef<DragSession | null>(null);
@@ -489,6 +621,54 @@ export default function App() {
     requestLayerReveal(ids);
     ensureNodeVisible(ids);
   }, [ensureNodeVisible, requestLayerReveal]);
+
+  const openAnnotation = useCallback((nodeId: string, annotationId?: string) => {
+    let current = stateRef.current;
+    const node = current.document.nodes[nodeId];
+    if (!node) return;
+    if (!current.document.selection.ids.includes(nodeId)) {
+      runCommand({ type: 'set-selection', ids: [nodeId] });
+      current = stateRef.current;
+    }
+    revealTargets([nodeId]);
+    if (annotationId) {
+      setAnnotationTarget({ nodeId, annotationId });
+      return;
+    }
+    const existingIds = new Set((current.document.nodes[nodeId]?.annotations ?? []).map((annotation) => annotation.id));
+    if (!runCommand({ type: 'add-annotation', nodeId, text: '', source: 'human' }, 'success')) return;
+    const annotations = stateRef.current.document.nodes[nodeId]?.annotations ?? [];
+    const created = annotations.find((annotation) => !existingIds.has(annotation.id)) ?? annotations[annotations.length - 1];
+    if (created) setAnnotationTarget({ nodeId, annotationId: created.id });
+  }, [revealTargets, runCommand]);
+
+  const addAnnotation = useCallback((nodeId: string, text: string) => {
+    const applied = runCommand({ type: 'add-annotation', nodeId, text, source: 'human' }, 'success');
+    if (applied) setAnnotationTarget(null);
+    return applied;
+  }, [runCommand]);
+
+  const updateAnnotation = useCallback((nodeId: string, annotationId: string, patch: { text?: string; resolved?: boolean }) => {
+    return runCommand({ type: 'update-annotation', nodeId, annotationId, ...patch, source: 'human' }, 'success');
+  }, [runCommand]);
+
+  const deleteAnnotation = useCallback((nodeId: string, annotationId: string) => {
+    const applied = runCommand({ type: 'delete-annotation', nodeId, annotationId, source: 'human' }, 'success');
+    if (applied) setAnnotationTarget(null);
+    return applied;
+  }, [runCommand]);
+
+  const handleToolChange = useCallback((nextTool: ToolName) => {
+    setTool(nextTool);
+    if (nextTool !== 'rectangle' && nextTool !== 'ellipse' && nextTool !== 'line' && nextTool !== 'arrow' && nextTool !== 'polygon') setShapeMenuOpen(false);
+    if (nextTool === 'annotate') {
+      const selectedId = stateRef.current.document.selection.primaryId;
+      if (selectedId) openAnnotation(selectedId);
+      else setAnnotationTarget(null);
+    } else {
+      setAnnotationTarget(null);
+    }
+  }, [openAnnotation]);
 
   const beginAgentWork = useCallback((ids: string[]) => {
     const token = createId('agent_work');
@@ -763,6 +943,11 @@ export default function App() {
   const handleKeyDown = useCallback((event: KeyboardEvent) => {
     const key = event.key.toLowerCase();
     if (key === 'escape') {
+      if (annotationTarget) {
+        event.preventDefault();
+        setAnnotationTarget(null);
+        return;
+      }
       if (stateRef.current.preview) {
         event.preventDefault();
         closePreview();
@@ -851,7 +1036,7 @@ export default function App() {
         runCommand({ type: 'update-elements', updates, source: 'human' });
       }
     }
-  }, [closePreview, commit, copySelection, exitFocus, notify, pasteSelection, runCommand, toggleCanvasFocus, zoomAt]);
+  }, [annotationTarget, closePreview, commit, copySelection, exitFocus, notify, pasteSelection, runCommand, toggleCanvasFocus, zoomAt]);
 
   useEffect(() => {
     window.addEventListener('keydown', handleKeyDown);
@@ -878,13 +1063,17 @@ export default function App() {
         });
       };
       if (drag.kind === 'move') {
+        const current = stateRef.current;
+        const snapped = getSnappedMove(current.document, drag.ids, delta);
         const next: Record<string, PreviewTransform> = {};
         drag.ids.forEach((id) => {
           const base = drag.base[id];
-          if (base) next[id] = { ...base, x: base.x + delta.x, y: base.y + delta.y };
+          if (base) next[id] = { ...base, x: base.x + snapped.delta.x, y: base.y + snapped.delta.y };
         });
+        setDragGuides(snapped.guides);
         previewNext(next);
       } else if (drag.kind === 'resize') {
+        setDragGuides([]);
         const base = drag.base;
         const resizeNode = stateRef.current.document.nodes[drag.nodeId];
         let x = base.x;
@@ -894,10 +1083,11 @@ export default function App() {
         if (drag.corner.includes('e')) width = Math.max(20, base.width + delta.x);
         if (drag.corner.includes('w')) { width = Math.max(20, base.width - delta.x); x = base.x + base.width - width; }
         if (drag.corner.includes('s')) height = Math.max(20, base.height + delta.y);
-        if (resizeNode?.type === 'text' && width !== base.width) height = measureTextBoxHeight(resizeNode, width);
+        if (resizeNode?.type === 'text' && width !== base.width && resizeNode.sizing?.height !== 'fixed') height = measureTextBoxHeight(resizeNode, width);
         if (drag.corner.includes('n')) y = base.y + base.height - height;
         previewNext({ [drag.nodeId]: { ...base, x, y, width, height } });
       } else if (drag.kind === 'rotate') {
+        setDragGuides([]);
         const point = screenToWorld(event.clientX, event.clientY);
         const angle = Math.atan2(point.y - drag.center.y, point.x - drag.center.x) * 180 / Math.PI;
         const startAngle = Math.atan2(screenToWorld(drag.startX, drag.startY).y - drag.center.y, screenToWorld(drag.startX, drag.startY).x - drag.center.x) * 180 / Math.PI;
@@ -915,12 +1105,14 @@ export default function App() {
         if (updates.length) runCommand({ type: 'update-elements', updates, source: 'human' }, 'success');
       } else if (drag.kind === 'resize' && preview[drag.nodeId]) {
         const target = preview[drag.nodeId];
-        runCommand({ type: 'update-elements', updates: [{ id: drag.nodeId, x: target.x, y: target.y, width: target.width, height: target.height }], source: 'human' }, 'success');
+        const resizedNode = stateRef.current.document.nodes[drag.nodeId];
+        runCommand({ type: 'update-elements', updates: [{ id: drag.nodeId, x: target.x, y: target.y, width: target.width, ...(resizedNode?.sizing ? {} : { height: target.height }) }], source: 'human' }, 'success');
       } else if (drag.kind === 'rotate' && preview[drag.nodeId]) {
         runCommand({ type: 'update-elements', updates: [{ id: drag.nodeId, rotation: preview[drag.nodeId].rotation }], source: 'human' }, 'success');
       }
       dragPreviewRef.current = {};
       setDragPreview({});
+      setDragGuides([]);
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
@@ -945,19 +1137,31 @@ export default function App() {
     commit(dispatchCommand(current, { type: 'set-selection', ids: selected }));
     revealTargets(selected);
     if (!selected.length) return;
-    if (selected.some((id) => isEffectivelyLocked(current.document, id))) {
+    const moveIds = getSelectionRoots(current.document, selected);
+    if (moveIds.some((id) => isEffectivelyLocked(current.document, id))) {
       notify('Locked Layers cannot be moved.', 'warning');
       return;
     }
     const base: Record<string, PreviewTransform> = {};
-    selected.forEach((id) => {
+    moveIds.forEach((id) => {
       const node = current.document.nodes[id];
       if (node) base[id] = { x: node.x, y: node.y, width: node.width, height: node.height, rotation: node.rotation };
     });
-    dragRef.current = { kind: 'move', startX: event.clientX, startY: event.clientY, ids: selected, base };
+    dragRef.current = { kind: 'move', startX: event.clientX, startY: event.clientY, ids: moveIds, base };
     event.currentTarget.setPointerCapture?.(event.pointerId);
     setDragging(true);
   }, [commit, notify, revealTargets, tool]);
+
+  const startAnnotate = useCallback((nodeId: string, event: ReactPointerEvent) => {
+    if (tool !== 'annotate' || event.button !== 0 || event.detail > 1) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const current = stateRef.current;
+    if (isEffectivelyLocked(current.document, nodeId)) {
+      notify('Locked Layers can still be annotated.', 'info');
+    }
+    openAnnotation(nodeId);
+  }, [notify, openAnnotation, tool]);
 
   const startPan = useCallback((event: ReactPointerEvent) => {
     if (event.button !== 0 || tool !== 'pan') return;
@@ -1000,6 +1204,10 @@ export default function App() {
     if (tool === 'select' && event.target !== event.currentTarget && !target.classList.contains('world')) return;
     const world = screenToWorld(event.clientX, event.clientY);
     const current = stateRef.current;
+    if (tool === 'annotate') {
+      if (event.target === event.currentTarget || target.classList.contains('world')) notify('Select a layer to add a note.');
+      return;
+    }
     if (tool === 'select') {
       runCommand({ type: 'set-selection', ids: [] });
       return;
@@ -1007,7 +1215,7 @@ export default function App() {
     if (tool === 'add-frame') {
       const preset: ArtboardPreset = 'website';
       const size = { width: 880, height: 600 };
-      const input: CreateArtboardInput = { name: 'Website', preset, position: { x: world.x - size.width / 2, y: world.y - size.height / 2 } };
+      const input: CreateArtboardInput = { name: 'Website mock-up', preset, position: { x: world.x - size.width / 2, y: world.y - size.height / 2 } };
       runCommand({ type: 'create-artboard', ...input, source: 'human' }, 'success');
       setTool('select');
       return;
@@ -1033,7 +1241,7 @@ export default function App() {
       setShapeMenuOpen(false);
       return;
     }
-  }, [runCommand, screenToWorld, startPan, tool]);
+  }, [notify, runCommand, screenToWorld, startPan, tool]);
 
   const handleStageDrop = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
     const assetId = event.dataTransfer.getData('application/x-easel-asset');
@@ -1068,18 +1276,24 @@ export default function App() {
   }, [zoomAt]);
 
   const selectNode = useCallback((id: string, additive = false) => {
-    if (runCommand({ type: 'set-selection', ids: [id], additive })) revealTargets([id]);
-  }, [revealTargets, runCommand]);
+    if (runCommand({ type: 'set-selection', ids: [id], additive })) {
+      revealTargets([id]);
+      if (tool === 'annotate' && !additive) openAnnotation(id);
+    }
+  }, [openAnnotation, revealTargets, runCommand, tool]);
 
   const selectDesign = useCallback((id: string) => {
     setLastActiveDesignId(id);
-    if (runCommand({ type: 'set-selection', ids: [id] })) revealTargets([id]);
-  }, [revealTargets, runCommand]);
+    if (runCommand({ type: 'set-selection', ids: [id] })) {
+      revealTargets([id]);
+      if (tool === 'annotate') openAnnotation(id);
+    }
+  }, [openAnnotation, revealTargets, runCommand, tool]);
 
   const commitText = useCallback((id: string, content: string) => {
     setEditingNodeId(null);
     const node = stateRef.current.document.nodes[id];
-    runCommand({ type: 'update-elements', updates: [{ id, content, ...(node?.type === 'text' ? { height: measureTextBoxHeight(node, node.width, content) } : {}) }], source: 'human' }, 'success');
+    runCommand({ type: 'update-elements', updates: [{ id, content, ...(node?.type === 'text' && !node.sizing ? { height: measureTextBoxHeight(node, node.width, content) } : {}) }], source: 'human' }, 'success');
   }, [runCommand]);
 
   const switchFile = useCallback((fileId: string) => {
@@ -1151,14 +1365,16 @@ export default function App() {
       <div className="workspace" ref={workspaceRef}>
         {!state.panels.leftOpen && <button className="sidebar-reopen" type="button" aria-label="Show Layers panel" title="Show Layers panel" onClick={() => commit({ ...stateRef.current, panels: { ...stateRef.current.panels, leftOpen: true } })}><PanelLeft size={16} /></button>}
         {state.panels.leftOpen && <LeftPanel width={leftPanelWidth} resizeActive={panelResizing} resizeMin={leftPanelBounds.minimum} resizeMax={leftPanelBounds.maximum} onResizeStart={startLeftPanelResize} onResizeKeyDown={handleLeftPanelResizeKeyDown} files={state.files} activeFileId={state.activeFileId} onSwitchFile={switchFile} onNewFile={createNewFile} onRenameFile={renameActiveFile} theme={state.theme} onTheme={(theme) => commit({ ...stateRef.current, theme })} document={currentDocument} designs={activeArtboards} activeDesign={activeDesign} assets={assets} selectedAssetId={selectedAssetId} onSelectAsset={setSelectedAssetId} onUploadAssets={() => fileInputRef.current?.click()} onPasteAsset={pasteAssetFromClipboard} selectedIds={currentDocument.selection.ids} workingIds={agentWorkingIds} pulseIds={pulseIds} revealRequest={layerRevealRequest} onSelect={selectNode} onSelectDesign={selectDesign} onToggleHidden={(id) => runCommand({ type: 'toggle-hidden', ids: [id], source: 'human' })} onToggleLocked={(id) => runCommand({ type: 'toggle-locked', ids: [id], source: 'human' })} onReorderLayer={(id, beforeId) => runCommand({ type: 'reorder-layer', id, beforeId, source: 'human' }, 'success')} onCollapse={() => commit({ ...stateRef.current, panels: { ...stateRef.current.panels, leftOpen: false } })} />}
-        <ToolRail tool={tool} onTool={(nextTool) => { setTool(nextTool); if (nextTool !== 'rectangle' && nextTool !== 'ellipse' && nextTool !== 'line' && nextTool !== 'arrow' && nextTool !== 'polygon') setShapeMenuOpen(false); }} shapeMenuOpen={shapeMenuOpen} onShapeMenu={() => setShapeMenuOpen((open) => !open)} onFit={fitSelection} leftOpen={state.panels.leftOpen} canUndo={Boolean(state.history.length)} canRedo={Boolean(state.future.length)} onUndo={() => runCommand({ type: 'undo' })} onRedo={() => runCommand({ type: 'redo' })} />
+        <ToolRail tool={tool} onTool={handleToolChange} shapeMenuOpen={shapeMenuOpen} onShapeMenu={() => setShapeMenuOpen((open) => !open)} onFit={fitSelection} leftOpen={state.panels.leftOpen} canUndo={Boolean(state.history.length)} canRedo={Boolean(state.future.length)} onUndo={() => runCommand({ type: 'undo' })} onRedo={() => runCommand({ type: 'redo' })} />
         <main className="canvas-main">
           <div className={`canvas-stage ${dragging ? 'is-dragging' : ''}`} ref={stageRef} onPointerDown={handleStagePointerDown} onWheel={handleWheel} onDrop={handleStageDrop} onDragOver={handleStageDragOver} tabIndex={0} aria-label="Canvas">
             {tool === 'add-frame' && <FrameQuickCreate onCreate={(input) => { const dimensions = stageRef.current?.getBoundingClientRect(); const center = dimensions ? screenToWorld(dimensions.left + dimensions.width / 2, dimensions.top + dimensions.height / 2) : { x: 600, y: 400 }; const size = input.preset === 'website-mobile' ? { width: 390, height: 844 } : input.preset === 'graphic' ? { width: 480, height: 600 } : { width: 880, height: 600 }; const position = { x: center.x - (input.width ?? size.width) / 2, y: center.y - (input.height ?? size.height) / 2 }; runCommand({ type: 'create-artboard', ...input, position, source: 'human' }, 'success'); setTool('select'); }} />}
             <div className="world" style={{ transform: `translate(${state.document.viewport.pan.x}px, ${state.document.viewport.pan.y}px) scale(${state.document.viewport.zoom})` }}>
-              {activePage?.rootIds.map((id) => <NodeRenderer key={id} id={id} document={currentDocument} tool={tool} selectedIds={currentDocument.selection.ids} editingNodeId={editingNodeId} pulseIds={pulseIds} workingIds={agentWorkingIds} focusIds={state.focus?.targetIds ?? []} preview={dragPreview} onPointerDown={startMove} onDoubleClick={(id) => setEditingNodeId(id)} onCommitText={commitText} onSelect={selectNode} />)}
+              {activePage?.rootIds.map((id) => <NodeRenderer key={id} id={id} document={currentDocument} tool={tool} selectedIds={currentDocument.selection.ids} editingNodeId={editingNodeId} pulseIds={pulseIds} workingIds={agentWorkingIds} focusIds={state.focus?.targetIds ?? []} preview={dragPreview} onPointerDown={startMove} onAnnotate={startAnnotate} onDoubleClick={(id) => setEditingNodeId(id)} onCommitText={commitText} onSelect={selectNode} />)}
               <SelectionLayer document={currentDocument} selectedIds={currentDocument.selection.ids} preview={dragPreview} onResize={startResize} onRotate={startRotate} />
             </div>
+            <SnapGuides guides={dragGuides} viewport={currentDocument.viewport} />
+            <AnnotationLayer document={currentDocument} target={annotationTarget} onOpen={openAnnotation} onClose={() => setAnnotationTarget(null)} onAdd={addAnnotation} onUpdate={updateAnnotation} onDelete={deleteAnnotation} />
             {state.focus && <div className="focus-hint"><Scan size={13} />Esc to exit focus</div>}
             <div className="stage-empty-hint" aria-hidden="true">{activePage?.rootIds.length ? '' : 'Choose a tool to start placing elements'}</div>
             {primaryNode && !state.panels.rightOpen && <button className="inspector-reopen" type="button" onClick={() => commit({ ...stateRef.current, panels: { ...stateRef.current.panels, rightOpen: true } })}>Show Inspector</button>}
@@ -1191,18 +1407,30 @@ type NodeRendererProps = {
   focusIds: string[];
   preview: Record<string, PreviewTransform>;
   onPointerDown: (id: string, event: ReactPointerEvent) => void;
+  onAnnotate: (id: string, event: ReactPointerEvent) => void;
   onDoubleClick: (id: string) => void;
   onCommitText: (id: string, content: string) => void;
   onSelect: (id: string, additive?: boolean) => void;
 };
 
-function NodeRenderer({ id, document, tool, selectedIds, editingNodeId, pulseIds, workingIds, focusIds, preview, onPointerDown, onDoubleClick, onCommitText }: NodeRendererProps) {
+function NodeRenderer({ id, document, tool, selectedIds, editingNodeId, pulseIds, workingIds, focusIds, preview, onPointerDown, onAnnotate, onDoubleClick, onCommitText }: NodeRendererProps) {
   const node = document.nodes[id];
   const textRef = useRef<HTMLDivElement | null>(null);
+  const isEditing = editingNodeId === node?.id && node?.type === 'text';
+  useEffect(() => {
+    if (!isEditing || !textRef.current) return;
+    textRef.current.focus();
+    const selection = window.getSelection();
+    const range = window.document.createRange();
+    range.selectNodeContents(textRef.current);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }, [isEditing]);
   if (!node || node.hidden) return null;
   const parent = node.parentId ? document.nodes[node.parentId] : undefined;
   const flexChild = Boolean(parent?.layout && parent.layout.mode !== 'free');
   const transform = preview[node.id];
+  const previewing = Boolean(transform);
   const x = transform?.x ?? node.x;
   const y = transform?.y ?? node.y;
   const width = transform?.width ?? node.width;
@@ -1210,12 +1438,12 @@ function NodeRenderer({ id, document, tool, selectedIds, editingNodeId, pulseIds
   const rotation = transform?.rotation ?? node.rotation;
   const vectorShape = node.type === 'polygon' || node.type === 'line' || node.type === 'arrow';
   const style: CSSProperties = {
-    position: flexChild ? 'relative' : 'absolute',
-    left: flexChild ? undefined : x,
-    top: flexChild ? undefined : y,
+    position: flexChild && !previewing ? 'relative' : 'absolute',
+    left: flexChild && !previewing ? undefined : x,
+    top: flexChild && !previewing ? undefined : y,
     width,
     height,
-    flex: flexChild ? `0 0 ${width}px` : undefined,
+    flex: flexChild && !previewing ? `0 0 ${width}px` : undefined,
     background: node.type === 'text' || vectorShape ? 'transparent' : node.style.fill,
     border: vectorShape ? '0' : `${node.style.borderWidth}px ${node.style.borderStyle} ${node.style.borderColor}`,
     borderRadius: node.type === 'ellipse' ? '50%' : node.style.borderRadius,
@@ -1234,40 +1462,34 @@ function NodeRenderer({ id, document, tool, selectedIds, editingNodeId, pulseIds
     flexDirection: node.layout?.mode === 'flex-row' ? 'row' : node.layout?.mode === 'flex-column' ? 'column' : undefined,
     gap: node.layout && node.layout.mode !== 'free' ? node.layout.gap : undefined,
     padding: node.layout && node.layout.mode !== 'free' ? node.layout.padding : undefined,
+    flexWrap: node.layout?.wrap ? 'wrap' : undefined,
     alignItems: node.layout && node.layout.mode !== 'free' ? node.layout.alignItems : undefined,
     justifyContent: node.layout && node.layout.mode !== 'free' ? node.layout.justifyContent : undefined,
     zIndex: node.type === 'artboard' ? 1 : undefined,
   };
   const className = ['canvas-node', `node-${node.type}`, selectedIds.includes(node.id) ? 'is-selected' : '', pulseIds.includes(node.id) ? 'is-pulsing' : '', workingIds.includes(node.id) ? node.type === 'artboard' ? 'is-agent-working-design' : 'is-agent-working-node' : '', focusIds.includes(node.id) ? 'is-focus-target' : '', node.locked ? 'is-locked' : ''].filter(Boolean).join(' ');
-  const isEditing = editingNodeId === node.id && node.type === 'text';
-
-  useEffect(() => {
-    if (!isEditing || !textRef.current) return;
-    textRef.current.focus();
-    const selection = window.getSelection();
-    const range = window.document.createRange();
-    range.selectNodeContents(textRef.current);
-    selection?.removeAllRanges();
-    selection?.addRange(range);
-  }, [isEditing]);
 
   const onDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (isEditing) {
       event.stopPropagation();
       return;
     }
+    if (tool === 'annotate') {
+      onAnnotate(node.id, event);
+      return;
+    }
     onPointerDown(getCanvasSelectionId(document, node.id), event);
   };
 
-  const children = node.childIds.map((childId) => <NodeRenderer key={childId} id={childId} document={document} tool={tool} selectedIds={selectedIds} editingNodeId={editingNodeId} pulseIds={pulseIds} workingIds={workingIds} focusIds={focusIds} preview={preview} onPointerDown={onPointerDown} onDoubleClick={onDoubleClick} onCommitText={onCommitText} onSelect={() => undefined} />);
+  const children = node.childIds.map((childId) => <NodeRenderer key={childId} id={childId} document={document} tool={tool} selectedIds={selectedIds} editingNodeId={editingNodeId} pulseIds={pulseIds} workingIds={workingIds} focusIds={focusIds} preview={preview} onPointerDown={onPointerDown} onAnnotate={onAnnotate} onDoubleClick={onDoubleClick} onCommitText={onCommitText} onSelect={() => undefined} />);
   if (node.type === 'text') {
-    return <div ref={textRef} className={className} data-node-id={node.id} data-node-type={node.type} aria-label={node.name} style={{ ...style, whiteSpace: 'pre-wrap', outline: isEditing ? '2px solid var(--color-active)' : undefined, cursor: node.locked ? 'not-allowed' : tool === 'select' ? 'move' : 'default' }} onPointerDown={onDown} onDoubleClick={(event) => { event.stopPropagation(); if (!node.locked) onDoubleClick(node.id); }} contentEditable={isEditing && !node.locked} suppressContentEditableWarning onBlur={(event) => { if (isEditing) onCommitText(node.id, event.currentTarget.textContent ?? ''); }} onKeyDown={(event) => { if (event.key === 'Escape') { event.currentTarget.blur(); } }}>{node.content ?? ''}{children}</div>;
+    return <div ref={textRef} className={className} data-node-id={node.id} data-node-type={node.type} aria-label={node.name} style={{ ...style, whiteSpace: 'pre-wrap', outline: isEditing ? '2px solid var(--color-active)' : undefined, cursor: node.locked ? 'not-allowed' : tool === 'select' ? 'move' : 'default' }} onPointerDown={onDown} onDoubleClick={(event) => { event.stopPropagation(); if (tool === 'select' && !node.locked) onDoubleClick(node.id); }} contentEditable={isEditing && !node.locked} suppressContentEditableWarning onBlur={(event) => { if (isEditing) onCommitText(node.id, event.currentTarget.textContent ?? ''); }} onKeyDown={(event) => { if (event.key === 'Escape') { event.currentTarget.blur(); } }}>{node.content ?? ''}{children}</div>;
   }
   if (node.type === 'image') {
     const asset = node.image?.assetId ? document.assets[node.image.assetId] : undefined;
-    return <div className={className} data-node-id={node.id} data-node-type={node.type} aria-label={node.image?.alt || node.name} style={{ ...style, cursor: node.locked ? 'not-allowed' : tool === 'select' ? 'move' : 'default' }} onPointerDown={onDown} onDoubleClick={(event) => { event.stopPropagation(); if (!node.locked) onDoubleClick(node.id); }}><ImageContent asset={asset} alt={node.image?.alt || node.name} label={node.image?.label || node.name} />{children}</div>;
+    return <div className={className} data-node-id={node.id} data-node-type={node.type} aria-label={node.image?.alt || node.name} style={{ ...style, cursor: node.locked ? 'not-allowed' : tool === 'select' ? 'move' : 'default' }} onPointerDown={onDown} onDoubleClick={(event) => { event.stopPropagation(); if (tool === 'select' && !node.locked) onDoubleClick(node.id); }}><ImageContent asset={asset} alt={node.image?.alt || node.name} label={node.image?.label || node.name} />{children}</div>;
   }
-  return <div className={`${className} ${node.type === 'artboard' ? 'artboard-node' : node.type === 'frame' ? 'frame-node' : `${node.type}-node`}`} data-node-id={node.id} data-node-type={node.type === 'artboard' ? 'frame' : node.type} data-label={node.name} aria-label={`${nodeTypeLabel(node.type)} ${node.name}`} style={{ ...style, cursor: node.locked ? 'not-allowed' : tool === 'select' ? 'move' : 'default' }} onPointerDown={onDown} onDoubleClick={(event) => { event.stopPropagation(); if (!node.locked) onDoubleClick(node.id); }}>{vectorShape ? <ShapeVisual node={node} /> : null}{children}</div>;
+  return <div className={`${className} ${node.type === 'artboard' ? 'artboard-node' : node.type === 'frame' ? 'frame-node' : `${node.type}-node`}`} data-node-id={node.id} data-node-type={node.type === 'artboard' ? 'frame' : node.type} data-label={node.name} aria-label={`${nodeTypeLabel(node.type)} ${node.name}`} style={{ ...style, cursor: node.locked ? 'not-allowed' : tool === 'select' ? 'move' : 'default' }} onPointerDown={onDown} onDoubleClick={(event) => { event.stopPropagation(); if (tool === 'select' && !node.locked) onDoubleClick(node.id); }}>{vectorShape ? <ShapeVisual node={node} /> : null}{children}</div>;
 }
 
 function ShapeVisual({ node }: { node: DesignNode }) {
@@ -1328,9 +1550,99 @@ function SelectionLayer({ document, selectedIds, preview, onResize, onRotate }: 
   </div>;
 }
 
+function SnapGuides({ guides, viewport }: { guides: SnapGuide[]; viewport: Viewport }) {
+  if (!guides.length) return null;
+  return <div className="snap-guides" aria-hidden="true">
+    {guides.map((guide, index) => {
+      const position = guide.position * viewport.zoom + (guide.axis === 'x' ? viewport.pan.x : viewport.pan.y);
+      const start = guide.start * viewport.zoom + (guide.axis === 'x' ? viewport.pan.y : viewport.pan.x);
+      const length = Math.max(1, (guide.end - guide.start) * viewport.zoom);
+      const style = guide.axis === 'x'
+        ? { left: position, top: start, height: length }
+        : { top: position, left: start, width: length };
+      return <div key={`${guide.axis}-${guide.kind ?? 'alignment'}-${index}`} className={`snap-guide snap-guide-${guide.axis} ${guide.kind === 'spacing' ? 'is-spacing' : ''}`} style={style}>
+        {guide.label && <span className="snap-guide-label">{guide.label}</span>}
+      </div>;
+    })}
+  </div>;
+}
+
+type AnnotationLayerProps = {
+  document: DocumentModel;
+  target: AnnotationTarget | null;
+  onOpen: (nodeId: string, annotationId?: string) => void;
+  onClose: () => void;
+  onAdd: (nodeId: string, text: string) => boolean;
+  onUpdate: (nodeId: string, annotationId: string, patch: { text?: string; resolved?: boolean }) => boolean;
+  onDelete: (nodeId: string, annotationId: string) => boolean;
+};
+
+function AnnotationLayer({ document, target, onOpen, onClose, onAdd, onUpdate, onDelete }: AnnotationLayerProps) {
+  const viewport = document.viewport;
+  const annotatedNodes = Object.values(document.nodes).filter((node) => node.pageId === document.activePageId && !isEffectivelyHidden(document, node.id) && (node.annotations?.length ?? 0) > 0);
+  const activeNode = target ? document.nodes[target.nodeId] : undefined;
+    const activeAnnotation = target && activeNode ? activeNode.annotations?.find((annotation) => annotation.id === target.annotationId) : undefined;
+  const activeRect = activeNode && !isEffectivelyHidden(document, activeNode.id) ? getAbsoluteRect(document, activeNode.id) : undefined;
+  const activeAnchor = activeRect ? { x: (activeRect.x + activeRect.width) * viewport.zoom + viewport.pan.x, y: activeRect.y * viewport.zoom + viewport.pan.y } : undefined;
+  return <div className="annotation-layer" aria-label="Layer annotations">
+    {annotatedNodes.flatMap((node) => (node.annotations ?? []).map((annotation, index) => {
+      const rect = getAbsoluteRect(document, node.id);
+      const left = (rect.x + rect.width) * viewport.zoom + viewport.pan.x + index * 13;
+      const top = rect.y * viewport.zoom + viewport.pan.y - index * 7;
+      const open = target?.nodeId === node.id && target.annotationId === annotation.id;
+      return <button key={`${node.id}-${annotation.id}`} type="button" className={`annotation-pin ${annotation.resolved ? 'is-resolved' : ''} ${open ? 'is-open' : ''}`} style={{ left, top }} aria-label={`${annotation.resolved ? 'Resolved' : 'Open'} note on ${node.name}`} title={`${annotation.resolved ? 'Resolved' : 'Open'} note · ${node.name}`} onPointerDown={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onOpen(node.id, annotation.id); }}><MessageSquarePlus size={14} /></button>;
+    }))}
+    {target && activeNode && activeAnchor && <div className="annotation-popover-wrap" style={{ left: activeAnchor.x, top: activeAnchor.y }} onPointerDown={(event) => { event.stopPropagation(); }}>
+      <AnnotationPopover node={activeNode} annotation={activeAnnotation} onClose={onClose} onAdd={onAdd} onUpdate={onUpdate} onDelete={onDelete} />
+    </div>}
+  </div>;
+}
+
+type AnnotationPopoverProps = {
+  node: DesignNode;
+  annotation?: LayerAnnotation;
+  onClose: () => void;
+  onAdd: (nodeId: string, text: string) => boolean;
+  onUpdate: (nodeId: string, annotationId: string, patch: { text?: string; resolved?: boolean }) => boolean;
+  onDelete: (nodeId: string, annotationId: string) => boolean;
+};
+
+function AnnotationPopover({ node, annotation, onClose, onAdd, onUpdate, onDelete }: AnnotationPopoverProps) {
+  const [draft, setDraft] = useState(annotation?.text ?? '');
+  const isExisting = Boolean(annotation);
+  useEffect(() => setDraft(annotation?.text ?? ''), [annotation?.id, annotation?.text]);
+  const save = () => {
+    if (annotation) {
+      if (draft === annotation.text) return true;
+      return onUpdate(node.id, annotation.id, { text: draft });
+    }
+    return onAdd(node.id, draft);
+  };
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      onClose();
+    } else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      save();
+    }
+  };
+  return <div className="annotation-popover" role="dialog" aria-label={`${isExisting ? 'Edit' : 'Add'} note for ${node.name}`}>
+    <div className="annotation-popover-heading"><div><strong>{isExisting ? 'Layer note' : 'Add note'}</strong><span>{node.name}</span></div><IconButton label="Dismiss note" onClick={onClose}><X size={14} /></IconButton></div>
+    <textarea className="annotation-editor" autoFocus value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={onKeyDown} placeholder="Leave a concise note…" rows={3} />
+    <div className="annotation-popover-actions">
+      <button type="button" className="secondary-button" onClick={save}>{isExisting ? 'Save' : 'Add marker'}</button>
+      {annotation && <button type="button" className="text-button annotation-resolve-button" onClick={() => onUpdate(node.id, annotation.id, { resolved: !annotation.resolved })}>{annotation.resolved ? <RotateCcw size={13} /> : <Check size={13} />}{annotation.resolved ? 'Reopen' : 'Resolve'}</button>}
+      {annotation && <button type="button" className="annotation-delete-button" aria-label="Delete note" title="Delete note" onClick={() => onDelete(node.id, annotation.id)}><Trash2 size={14} /></button>}
+    </div>
+    <span className="annotation-shortcut">Ctrl/⌘ + Enter to save · Esc to dismiss</span>
+  </div>;
+}
+
 function ToolRail({ tool, onTool, shapeMenuOpen, onShapeMenu, onFit, leftOpen, canUndo, canRedo, onUndo, onRedo }: { tool: ToolName; onTool: (tool: ToolName) => void; shapeMenuOpen: boolean; onShapeMenu: () => void; onFit: () => void; leftOpen: boolean; canUndo: boolean; canRedo: boolean; onUndo: () => void; onRedo: () => void }) {
   const tools: Array<{ id: ToolName; icon: ReactNode }> = [
     { id: 'select', icon: <Scan size={18} /> },
+    { id: 'annotate', icon: <MessageSquarePlus size={18} /> },
     { id: 'pan', icon: <Hand size={18} /> },
     { id: 'add-frame', icon: <Frame size={18} /> },
   ];
@@ -1441,7 +1753,8 @@ function LeftPanel({ width, resizeActive, resizeMin, resizeMax, onResizeStart, o
   }, [expandedIds, revealRequest.ids, revealRequest.token, activeDesign?.id]);
 
   const handleDragStart = (id: string, event: ReactDragEvent<HTMLDivElement>) => {
-    if (isEffectivelyLocked(document, id) || (event.target as HTMLElement).closest('button')) {
+    const target = event.target as HTMLElement;
+    if (isEffectivelyLocked(document, id) || target.closest('.layer-visibility, .layer-lock, .disclosure-button')) {
       event.preventDefault();
       return;
     }
@@ -1595,7 +1908,7 @@ function Inspector({ node, selectedCount, document, frameId, exportOpen, exportA
   const [contentDraft, setContentDraft] = useState(node.content ?? '');
   useEffect(() => setContentDraft(node.content ?? ''), [node.id, node.content]);
   const commitField = (patch: ElementPatch) => {
-    const textSizePatch = node.type === 'text' && patch.width !== undefined ? { height: measureTextBoxHeight(node, patch.width) } : node.type === 'text' && patch.content !== undefined ? { height: measureTextBoxHeight(node, node.width, patch.content) } : {};
+    const textSizePatch = node.type === 'text' && !node.sizing && patch.width !== undefined ? { height: measureTextBoxHeight(node, patch.width) } : node.type === 'text' && !node.sizing && patch.content !== undefined ? { height: measureTextBoxHeight(node, node.width, patch.content) } : {};
     onUpdate([{ ...patch, ...textSizePatch }]);
   };
   const parent = node.parentId ? document.nodes[node.parentId] : undefined;
@@ -1605,7 +1918,8 @@ function Inspector({ node, selectedCount, document, frameId, exportOpen, exportA
     <div className="inspector-scroll">
       {selectedCount > 1 ? <MultiInspectorActions onDuplicate={onDuplicate} onDelete={onDelete} onAlign={onAlign} onDistribute={onDistribute} onGroup={onGroup} onReorder={onReorder} /> : <>
         <InspectorSection title="Layout" icon={<Settings2 size={15} />}>
-          <div className="field-grid four"><NumberField label="X" value={node.x} step={1} onCommit={(value) => commitField({ id: node.id, x: value })} /><NumberField label="Y" value={node.y} step={1} onCommit={(value) => commitField({ id: node.id, y: value })} /><NumberField label="W" value={node.width} step={1} min={1} onCommit={(value) => commitField({ id: node.id, width: value })} /><NumberField label="H" value={node.height} step={1} min={1} onCommit={(value) => commitField({ id: node.id, height: value })} /></div>
+          <div className="field-grid four"><NumberField label="X" value={node.x} step={1} onCommit={(value) => commitField({ id: node.id, x: value })} /><NumberField label="Y" value={node.y} step={1} onCommit={(value) => commitField({ id: node.id, y: value })} /><NumberField label="W" value={node.width} step={1} min={1} disabled={Boolean(node.sizing?.width && node.sizing.width !== 'fixed')} onCommit={(value) => commitField({ id: node.id, width: value })} /><NumberField label="H" value={node.height} step={1} min={1} disabled={Boolean(node.sizing?.height && node.sizing.height !== 'fixed')} onCommit={(value) => commitField({ id: node.id, height: value })} /></div>
+          <div className="sizing-controls"><SizingField label="Width" value={node.sizing?.width ?? 'fixed'} onCommit={(value) => commitField({ id: node.id, sizing: { width: value } })} /><SizingField label="Height" value={node.sizing?.height ?? 'fixed'} onCommit={(value) => commitField({ id: node.id, sizing: { height: value } })} /></div>
           <div className="field-row"><span className="field-label">Rotation</span><NumberField label="Rotation" hideLabel value={node.rotation} step={1} onCommit={(value) => commitField({ id: node.id, rotation: value })} /><span className="field-suffix">deg</span></div>
         </InspectorSection>
         <InspectorSection title="Fill" icon={<Palette size={15} />}>
@@ -1631,7 +1945,7 @@ function Inspector({ node, selectedCount, document, frameId, exportOpen, exportA
           <div className="image-meta-row"><span>{node.image?.role ?? 'reference'}</span><span>{node.image?.naturalWidth ?? 0} × {node.image?.naturalHeight ?? 0}</span></div>
           {node.image?.palette.length ? <div className="palette-row" aria-label="Dominant colors">{node.image.palette.map((color) => <span key={color} className="palette-swatch" style={{ background: color }} title={color} />)}</div> : null}
         </InspectorSection>}
-        {(node.type === 'frame' || node.type === 'artboard') && <details className="inspector-details"><summary><span><Layers3 size={15} />Frame layout</span><ChevronRight size={15} /></summary><div className="details-content"><SelectField label="Mode" value={node.layout?.mode ?? 'free'} options={['free', 'flex-row', 'flex-column']} onCommit={(value) => commitField({ id: node.id, layout: { mode: value as LayoutMode } })} /><div className="field-grid two"><NumberField label="Gap" value={node.layout?.gap ?? 16} step={1} min={0} onCommit={(value) => commitField({ id: node.id, layout: { gap: value } })} /><NumberField label="Padding" value={node.layout?.padding ?? 24} step={1} min={0} onCommit={(value) => commitField({ id: node.id, layout: { padding: value } })} /></div><div className="field-grid two"><SelectField label="Align" value={node.layout?.alignItems ?? 'start'} options={['start', 'center', 'end', 'stretch']} onCommit={(value) => commitField({ id: node.id, layout: { alignItems: value as AlignItems } })} /><SelectField label="Justify" value={node.layout?.justifyContent ?? 'start'} options={['start', 'center', 'end', 'space-between']} onCommit={(value) => commitField({ id: node.id, layout: { justifyContent: value as 'start' | 'center' | 'end' | 'space-between' } })} /></div><label className="check-field"><input type="checkbox" checked={node.layout?.clipContent ?? false} onChange={(event) => commitField({ id: node.id, layout: { clipContent: event.target.checked } })} />Clip contents</label></div></details>}
+        {(node.type === 'frame' || node.type === 'artboard') && <details className="inspector-details"><summary><span><Layers3 size={15} />Frame layout</span><ChevronRight size={15} /></summary><div className="details-content"><LayoutModeField value={node.layout?.mode ?? 'free'} onCommit={(value) => commitField({ id: node.id, layout: { mode: value } })} /><div className="field-grid two"><NumberField label="Gap" value={node.layout?.gap ?? 16} step={1} min={0} onCommit={(value) => commitField({ id: node.id, layout: { gap: value } })} /><NumberField label="Padding" value={node.layout?.padding ?? 24} step={1} min={0} onCommit={(value) => commitField({ id: node.id, layout: { padding: value } })} /></div><div className="field-grid two"><SelectField label="Align" value={node.layout?.alignItems ?? 'start'} options={['start', 'center', 'end', 'stretch']} onCommit={(value) => commitField({ id: node.id, layout: { alignItems: value as AlignItems } })} /><SelectField label="Justify" value={node.layout?.justifyContent ?? 'start'} options={['start', 'center', 'end', 'space-between']} onCommit={(value) => commitField({ id: node.id, layout: { justifyContent: value as 'start' | 'center' | 'end' | 'space-between' } })} /></div><div className="layout-options"><label className="check-field"><input type="checkbox" checked={node.layout?.wrap ?? false} onChange={(event) => commitField({ id: node.id, layout: { wrap: event.target.checked } })} />Wrap rows</label><label className="check-field"><input type="checkbox" checked={node.layout?.clipContent ?? false} onChange={(event) => commitField({ id: node.id, layout: { clipContent: event.target.checked } })} />Clip contents</label></div></div></details>}
         {node.type === 'polygon' && <InspectorSection title="Polygon" icon={<Triangle size={15} />}><NumberField label="Sides" value={node.shape?.sides ?? 6} step={1} min={3} onCommit={(value) => commitField({ id: node.id, shape: { sides: Math.round(value) } })} /></InspectorSection>}
         {node.binding && <details className="inspector-details binding-details" open><summary><span><Clipboard size={15} />Binding</span><ChevronRight size={15} /></summary><div className="details-content"><div className="binding-key">{node.binding.key}</div>{node.binding.sourceLabel && <div className="binding-source">Source label: {node.binding.sourceLabel}</div>}<div className="binding-source">Updated {new Date(node.binding.lastUpdatedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</div>{boundDiffers && <div className="binding-diff">Differs from the shared value.</div>}<div className="binding-actions"><button type="button" className="secondary-button" onClick={onReapply} disabled={!node.binding.sharedValue}><Check size={14} />Reapply</button><button type="button" className="text-button" onClick={onUnbind}>Unbind</button></div></div></details>}
       </>}
@@ -1651,11 +1965,21 @@ function MultiInspectorActions({ onDuplicate, onDelete, onAlign, onDistribute, o
   return <div className="multi-actions"><p>Multi-selection</p><div className="action-grid"><IconButton label="Align left" onClick={() => onAlign('left')}><AlignStartHorizontal size={16} /></IconButton><IconButton label="Align horizontal center" onClick={() => onAlign('horizontal-center')}><AlignCenterHorizontal size={16} /></IconButton><IconButton label="Align right" onClick={() => onAlign('right')}><AlignEndHorizontal size={16} /></IconButton><IconButton label="Align top" onClick={() => onAlign('top')}><AlignStartVertical size={16} /></IconButton><IconButton label="Align vertical center" onClick={() => onAlign('vertical-center')}><AlignCenterVertical size={16} /></IconButton><IconButton label="Align bottom" onClick={() => onAlign('bottom')}><AlignEndVertical size={16} /></IconButton><IconButton label="Distribute horizontally" onClick={() => onDistribute('horizontal')}><AlignHorizontalDistributeCenter size={16} /></IconButton><IconButton label="Group" onClick={onGroup}><Layers3 size={16} /></IconButton></div><div className="multi-action-buttons"><button type="button" className="secondary-button" onClick={onDuplicate}><Copy size={14} />Duplicate</button><button type="button" className="secondary-button" onClick={() => onReorder('front')}><BringToFront size={14} />Front</button><button type="button" className="danger-button" onClick={onDelete}><Trash2 size={14} />Delete</button></div></div>;
 }
 
-function NumberField({ label, value, onCommit, step = 1, min = -20000, hideLabel = false }: { label: string; value: number; onCommit: (value: number) => void; step?: number; min?: number; hideLabel?: boolean }) {
+function LayoutModeField({ value, onCommit }: { value: LayoutMode; onCommit: (value: LayoutMode) => void }) {
+  const options: Array<{ value: LayoutMode; label: string }> = [{ value: 'free', label: 'Free' }, { value: 'flex-row', label: 'Row' }, { value: 'flex-column', label: 'Column' }];
+  return <div className="segmented-field"><span className="field-label">Flow</span><div className="segmented-control" role="radiogroup" aria-label="Layout flow">{options.map((option) => <button key={option.value} type="button" role="radio" aria-checked={value === option.value} className={value === option.value ? 'is-selected' : ''} onClick={() => onCommit(option.value)}>{option.label}</button>)}</div></div>;
+}
+
+function SizingField({ label, value, onCommit }: { label: string; value: SizingMode; onCommit: (value: SizingMode) => void }) {
+  const options: Array<{ value: SizingMode; label: string }> = [{ value: 'fixed', label: 'Fixed' }, { value: 'hug', label: 'Hug' }, { value: 'fill', label: 'Fill' }];
+  return <div className="segmented-field"><span className="field-label">{label}</span><div className="segmented-control sizing-control" role="radiogroup" aria-label={`${label} sizing`}>{options.map((option) => <button key={option.value} type="button" role="radio" aria-checked={value === option.value} className={value === option.value ? 'is-selected' : ''} onClick={() => onCommit(option.value)}>{option.label}</button>)}</div></div>;
+}
+
+function NumberField({ label, value, onCommit, step = 1, min = -20000, hideLabel = false, disabled = false }: { label: string; value: number; onCommit: (value: number) => void; step?: number; min?: number; hideLabel?: boolean; disabled?: boolean }) {
   const [draft, setDraft] = useState(String(Number(value.toFixed(3))));
   useEffect(() => setDraft(String(Number(value.toFixed(3)))), [value]);
   const finish = () => { const parsed = Number(draft); if (Number.isFinite(parsed) && parsed >= min) onCommit(parsed); else setDraft(String(Number(value.toFixed(3)))); };
-  return <label className={`number-field ${hideLabel ? 'hide-label' : ''}`}><span className="field-label">{label}</span><input aria-label={label} className="number-input" type="number" step={step} min={min} value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={finish} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} /></label>;
+  return <label className={`number-field ${hideLabel ? 'hide-label' : ''} ${disabled ? 'is-disabled' : ''}`}><span className="field-label">{label}</span><input aria-label={label} className="number-input" type="number" step={step} min={min} value={draft} disabled={disabled} onChange={(event) => setDraft(event.target.value)} onBlur={finish} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} /></label>;
 }
 
 function SelectField({ label, value, options, onCommit }: { label: string; value: string; options: string[]; onCommit: (value: string) => void }) {
@@ -1671,7 +1995,7 @@ function ColorField({ label, value, onCommit }: { label: string; value: string; 
 
 function FrameQuickCreate({ onCreate }: { onCreate: (input: CreateArtboardInput) => void }) {
   const presets: Array<{ id: ArtboardPreset; label: string; size: string }> = [
-    { id: 'website', label: 'Website', size: '880 × 600' },
+    { id: 'website', label: 'Website mock-up', size: '880 × 600' },
     { id: 'website-mobile', label: 'Mobile', size: '390 × 844' },
     { id: 'graphic', label: 'Graphic', size: '480 × 600' },
   ];
