@@ -1,6 +1,8 @@
 # Easel
 
-Easel is a local-first React + TypeScript canvas for structured visual editing. A person and a host agent use the same normalized model, undoable commands, persistence, validation, and export paths.
+Easel is a collaborative canvas for website mock-ups, posters, and graphics. You and your agent edit the same design through WebMCP, using context from your connected apps. Human and agent actions share the same document model, validation, undo history, and export paths.
+
+**Try it:** [easel-design.vercel.app](https://easel-design.vercel.app/) — no Easel account required.
 
 ## Run locally
 
@@ -25,15 +27,17 @@ The included `vercel.json` and `public/_headers` add:
 
 ## Product surface
 
-- A calm light/dark shell with a persistent Layers toggle, sidebar File selector, resizable left panel, vertical tool rail, canvas, and contextual Inspector drawer.
+- A light/dark shell with a sidebar File selector, resize-to-collapse left panel, reopen button, header theme toggle, vertical tool rail, canvas, and contextual Inspector drawer.
 - Independent saved Files with exact File switching, rename, New File, local IndexedDB persistence, and local-storage fallback.
 - Each File contains a Canvas with Website and Graphic Frames, plus nested Frames, text, shapes, images, bindings, visibility, and lock state.
 - Human editing for selection, shift multi-select, pan, zoom, Fit Canvas, frame creation, rectangle/ellipse/line/arrow/polygon/text tools, move, resize, rotate, opacity, stroke, fill, typography, layout, grouping, ordering, hide, lock, copy/paste, and undo/redo.
 - An Assets tab with search, upload, paste, source labels, thumbnails, preview-only selection, and drag placement into an exact Frame. Assets remain local data URLs with bounded metadata and aspect-ratio-preserving placement.
-- Deterministic Book Club starter content: `After Hours Book Club`, `Good books. Better conversations.`, `September 18 · 7:00 PM`, `The Reading Room`, and `Join the next gathering`, with shared `event.title`, `event.tagline`, `event.date`, `event.location`, and `event.image` bindings.
+- Book Club starter content includes a Website mock-up and Graphic, `Date TBA`, `Time TBA`, and `Venue TBA`, plus an empty Graphic Image Area. The poster starts with `Quiet books. Good company.` and `Bring a friend.` Shared `event.date`, `event.time`, and `event.venue` bindings connect the corresponding details across both Frames.
+- Selection-aware agent edits and layer-attached annotations with optional text. An agent can identify addressed annotations in its update; successful edits remove those notes in the same undoable transaction.
+- Images placed into a designated image area fill its exact bounds with centered, aspect-ratio-preserving cover cropping. Freely placed images retain contain behavior.
 - PNG preview/capture, SVG export, static HTML/CSS export, and JSON export. Static HTML is an export artifact, not production application code.
 
-## Website mock-up Tools
+## WebMCP tools
 
 When `document.modelContext.registerTool` is available, Easel registers these strict tools:
 
@@ -65,7 +69,7 @@ The canvas does not authenticate to external systems or fetch remote data. A hos
 
 1. Inspect the active File or selection.
 2. Read an approved source through the host connector.
-3. Bind semantic fields such as `event.title`, `event.date`, or `event.location`.
+3. Use shared semantic fields such as `event.date`, `event.time`, and `event.venue` (already bound in the starter File).
 4. Apply a typed value batch with `apply_context_values`.
 5. Validate, focus, capture, or export the selected Frames.
 
@@ -81,14 +85,25 @@ Credentials and connector policy stay outside this shell; the visual result rema
 - `src/persistence.ts` stores versioned File records in IndexedDB with a local-storage fallback and migrates only the old untouched seed.
 - `src/exports.ts` renders PNG/SVG/static HTML and JSON with local assets.
 
-## Demo path
+## Testing and demo walkthrough
 
-1. Start the dev server; the seeded Book Club File opens with Website and Graphic Frames visible together.
-2. Use the Layers tab to select a Frame or Layer, then edit its content and appearance in Inspector.
-3. Use the Assets tab to inspect the original starter illustration, upload or paste a local image, and drag it into a Frame.
-4. Choose Shapes for rectangle, ellipse, line, arrow, or polygon placement; edit polygon sides and strokes in Inspector.
-5. Open Files to create, rename, switch, close, import, or reset the active File.
-6. Use a host that supports Website mock-up Tools to inspect, annotate, bind, apply context, validate, capture, and export through the same model.
+Open the live URL in a WebMCP-capable host. The recorded demo uses Codex's in-app browser. An ordinary browser supports manual editing, but agent actions require a host/runtime that can discover and invoke WebMCP tools.
+
+1. The starter Book Club File contains a Website mock-up and matching Graphic. Select Website Title in Layers, then ask: “Increase this title's font size by five pixels.”
+2. Ask: “Change both frame backgrounds to the same light warm beige.” Inspect the changes or undo them, and try moving or resizing a layer yourself.
+3. Activate Annotate and choose a paragraph on the canvas or in Layers. Ask the agent to shorten the marked paragraph. Annotation text is optional.
+4. Upload or paste an image into Assets and drag it into a Frame, or ask the agent to import and place an accessible image into Graphic Image Area.
+5. Select the Graphic and export it as PNG. Website frames are mock-ups; static HTML export is not a functioning website application.
+
+### Optional connected-context demo
+
+These steps use your own authorized host plugins, not credentials stored in Easel. The creator's private demo documents are not publicly shared and are not required for basic testing.
+
+- **Notion:** Read an event brief and apply its date, time, and venue to the corresponding shared fields in both Frames.
+- **Google Drive:** Retrieve an accessible photograph, add it to Assets, and place it into Graphic Image Area.
+- **Gmail:** Read an event-feedback email and apply its requested changes. The recorded example changes the subtitle to `Stories worth staying up for.` and removes `Bring a friend.`
+
+Files and imported assets are local to your browser profile. Judges do not share the creator's working File. Use the File selector to create, rename, or switch Files. Undo/redo is available for edits; there is no dedicated demo-reset action.
 
 ## Notes and limitations
 
