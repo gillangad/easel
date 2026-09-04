@@ -429,6 +429,7 @@ function validateImageMetadata(document: DocumentModel, image: (Partial<ImageMet
     label: typeof image.label === 'string' ? image.label.slice(0, 160) : asset.originalName,
     alt: typeof image.alt === 'string' ? image.alt.slice(0, 240) : asset.originalName,
     palette: asset.palette.slice(0, 6),
+    fit: image.fit === 'cover' ? 'cover' : 'contain',
   };
 }
 
@@ -451,6 +452,26 @@ function upsertAsset(document: DocumentModel, input: ImageAsset): ImageAsset {
   return asset;
 }
 
+function isDesignatedImageTarget(node: DesignNode): boolean {
+  if (node.type !== 'rectangle') return false;
+  const name = node.name.trim().toLowerCase();
+  return /\bimage\b/.test(name) && /\b(area|box|placeholder|target|slot)\b/.test(name);
+}
+
+function findDesignatedImageTarget(document: DocumentModel, frame: DesignNode, position: Point, width: number, height: number): DesignNode | undefined {
+  const center = { x: position.x + width / 2, y: position.y + height / 2 };
+  const nearlyEqual = (left: number, right: number) => Math.abs(left - right) <= 2;
+  return frame.childIds
+    .map((id) => document.nodes[id])
+    .filter((node): node is DesignNode => Boolean(node && isDesignatedImageTarget(node)))
+    .filter((node) => {
+      const exactBounds = nearlyEqual(node.x, position.x) && nearlyEqual(node.y, position.y) && nearlyEqual(node.width, width) && nearlyEqual(node.height, height);
+      const centerInside = center.x >= node.x && center.x <= node.x + node.width && center.y >= node.y && center.y <= node.y + node.height;
+      return exactBounds || centerInside;
+    })
+    .sort((left, right) => left.width * left.height - right.width * right.height)[0];
+}
+
 function placeAssetMutation(document: DocumentModel, input: PlaceAssetInput): MutationOutcome {
   const frame = assertNode(document, input.frameId);
   if (frame.type !== 'artboard' && frame.type !== 'frame') throw new CommandError('INVALID_TARGET', 'frameId must reference a Frame.', [frame.id]);
@@ -464,6 +485,23 @@ function placeAssetMutation(document: DocumentModel, input: PlaceAssetInput): Mu
   if (input.height !== undefined && input.width === undefined) width = height * ratio;
   width = ensureDimension(width, 'width');
   height = ensureDimension(height, 'height');
+  const image = validateImageMetadata(document, { assetId: asset.id, role: 'content', label: asset.originalName, alt: input.alt?.slice(0, 240) || asset.originalName });
+  const target = findDesignatedImageTarget(document, frame, input.position, width, height);
+  if (target) {
+    const deletedIds = [...target.childIds].flatMap((childId) => deleteSubtree(document, childId));
+    target.type = 'image';
+    target.name = input.name ? ensureString(input.name, 'layer name') : target.name;
+    target.style = { ...target.style, borderColor: 'transparent', borderWidth: 0, borderStyle: 'solid' };
+    target.content = undefined;
+    target.image = { ...image, fit: 'cover' };
+    target.layout = undefined;
+    target.shape = undefined;
+    target.childIds = [];
+    setNodeUpdated(target);
+    document.selection = { ids: [target.id], primaryId: target.id };
+    const bounds = { x: target.x, y: target.y, width: target.width, height: target.height, rotation: target.rotation };
+    return { document, changedIds: [asset.id, target.id], skippedIds: [], result: { assetId: asset.id, layerId: target.id, layerName: target.name, frame: { id: frame.id, name: frame.name, type: 'frame' }, bounds, source: asset.sourceLabel ?? 'Uploaded', replacedTargetId: target.id, deletedIds }, message: `Placed image in ${target.name}` };
+  }
   const node = makeNode({
     id: createId('image'),
     type: 'image',
@@ -475,17 +513,7 @@ function placeAssetMutation(document: DocumentModel, input: PlaceAssetInput): Mu
     width,
     height,
     style: { borderRadius: 12, borderWidth: 0 },
-    image: {
-      assetId: asset.id,
-      originalName: asset.originalName,
-      naturalWidth: asset.naturalWidth,
-      naturalHeight: asset.naturalHeight,
-      aspectRatio: asset.aspectRatio,
-      role: 'content',
-      label: asset.originalName,
-      alt: input.alt?.slice(0, 240) || asset.originalName,
-      palette: asset.palette.slice(0, 6),
-    },
+    image,
   });
   document.nodes[node.id] = node;
   frame.childIds.push(node.id);

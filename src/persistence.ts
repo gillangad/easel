@@ -21,6 +21,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+function removeNodeTree(document: DocumentModel, id: string): void {
+  const node = document.nodes[id];
+  if (!node) return;
+  [...node.childIds].forEach((childId) => removeNodeTree(document, childId));
+  if (node.parentId) {
+    const parent = document.nodes[node.parentId];
+    if (parent) parent.childIds = parent.childIds.filter((childId) => childId !== id);
+  }
+  delete document.nodes[id];
+}
+
+function removeDefaultWebsiteTitleDuplicates(document: DocumentModel): void {
+  const website = document.nodes.artboard_website;
+  const primary = document.nodes.site_title;
+  if (!website || !primary || website.type !== 'artboard' || primary.type !== 'text' || primary.parentId !== website.id || primary.name !== 'Website Title' || primary.content !== 'After Hours Book Club') return;
+  const normalizedTitle = (primary.content ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+  Object.values(document.nodes)
+    .filter((node) => node.id !== primary.id && node.type === 'text' && node.pageId === primary.pageId && node.parentId === primary.parentId && (node.content ?? '').replace(/\s+/g, ' ').trim().toLowerCase() === normalizedTitle)
+    .map((node) => node.id)
+    .forEach((id) => removeNodeTree(document, id));
+}
+
 function normalizeDocument(value: DocumentModel): DocumentModel {
   const document = deepClone(value);
   document.selection.ids = document.selection.ids.filter((id) => Boolean(document.nodes[id]));
@@ -64,6 +86,9 @@ function normalizeDocument(value: DocumentModel): DocumentModel {
     if (node.type === 'polygon' && (!node.shape || !Number.isFinite(node.shape.sides))) node.shape = { sides: 6 };
     node.childIds = Array.isArray(node.childIds) ? node.childIds.filter((id) => Boolean(document.nodes[id])) : [];
   });
+  removeDefaultWebsiteTitleDuplicates(document);
+  document.selection.ids = document.selection.ids.filter((id) => Boolean(document.nodes[id]));
+  document.selection.primaryId = document.selection.ids.includes(document.selection.primaryId ?? '') ? document.selection.primaryId : document.selection.ids[document.selection.ids.length - 1] ?? null;
   materializeDocumentLayout(document);
   Object.values(document.assets).forEach((asset) => {
     asset.sourceLabel = asset.sourceLabel || 'Uploaded';

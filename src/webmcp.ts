@@ -341,7 +341,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'import_and_place_asset',
     title: 'Import and place asset',
-    description: 'Create or deduplicate one small image Asset from data and place it at an exact position inside a Frame.',
+    description: 'Create or deduplicate one small image Asset and place it inside a Frame. A placement landing in a named Image Area, Image Box, or Image Placeholder replaces that target at its exact bounds with a centered, aspect-ratio-preserving cover crop.',
     inputSchema: { type: 'object', properties: { data: { type: 'string', minLength: 1, maxLength: 1500000 }, filename: { type: 'string', minLength: 1, maxLength: 160 }, mimeType: { type: 'string', enum: ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml'] }, source: { type: 'string', maxLength: 40 }, target: FILE_TARGET_SCHEMA, position: POSITION_SCHEMA, width: { type: 'number', minimum: 1, maximum: 12000 }, height: { type: 'number', minimum: 1, maximum: 12000 }, name: { type: 'string', maxLength: 120 }, alt: { type: 'string', maxLength: 240 } }, required: ['data', 'filename', 'mimeType', 'target', 'position'], additionalProperties: false },
     annotations: { untrustedContentHint: true },
   },

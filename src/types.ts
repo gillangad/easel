@@ -87,6 +87,7 @@ export type ImageMetadata = {
   label: string;
   alt: string;
   palette: string[];
+  fit?: 'contain' | 'cover';
 };
 
 export type BindingMetadata = {

@@ -119,7 +119,7 @@ export function renderArtboardSvg(document: DocumentModel, artboardId: string, s
     if (node.type === 'text') body = renderText(node, x, y);
     else if (node.type === 'image') {
       const asset = getAsset(document, node.image?.assetId);
-      if (asset?.dataUrl.startsWith('data:image/')) body = `<image href="${escapeXml(asset.dataUrl)}" x="${x}" y="${y}" width="${node.width}" height="${node.height}" preserveAspectRatio="xMidYMid meet" opacity="${node.style.opacity}"/>`;
+      if (asset?.dataUrl.startsWith('data:image/')) body = `<image href="${escapeXml(asset.dataUrl)}" x="${x}" y="${y}" width="${node.width}" height="${node.height}" preserveAspectRatio="${node.image?.fit === 'cover' ? 'xMidYMid slice' : 'xMidYMid meet'}" opacity="${node.style.opacity}"/>`;
       else {
         unsupported.push(`${node.name}: unsupported or missing image asset`);
         body = `<rect x="${x}" y="${y}" width="${node.width}" height="${node.height}" ${styleAttributes({ ...node, style: { ...node.style, fill: '#ecece9' } })}/>`;
@@ -128,8 +128,9 @@ export function renderArtboardSvg(document: DocumentModel, artboardId: string, s
       body = renderShape(node, x, y);
     }
     const children = node.childIds.map(renderNode).join('');
-    const clip = node.layout?.clipContent ? ` clip-path="url(#clip-${escapeXml(node.id)})"` : '';
-    const clipDef = node.layout?.clipContent ? `<clipPath id="clip-${escapeXml(node.id)}"><rect x="${x}" y="${y}" width="${node.width}" height="${node.height}" rx="${node.style.borderRadius}"/></clipPath>` : '';
+    const clipsContent = node.layout?.clipContent || (node.type === 'image' && node.style.borderRadius > 0);
+    const clip = clipsContent ? ` clip-path="url(#clip-${escapeXml(node.id)})"` : '';
+    const clipDef = clipsContent ? `<clipPath id="clip-${escapeXml(node.id)}"><rect x="${x}" y="${y}" width="${node.width}" height="${node.height}" rx="${node.style.borderRadius}"/></clipPath>` : '';
     if (node.type === 'text' || node.type === 'image' || node.type === 'rectangle') return `${clipDef}<g${transform}${clip}>${body}${children}</g>`;
     return `${clipDef}<g${transform}${clip}>${body}${children}</g>`;
   };
@@ -151,7 +152,7 @@ function inlineCss(node: DesignNode, x: number, y: number, relative = true): str
   const layoutCss = layout && layout.mode !== 'free'
     ? `display:flex;flex-direction:${layout.mode === 'flex-row' ? 'row' : 'column'};flex-wrap:${layout.wrap ? 'wrap' : 'nowrap'};gap:${layout.gap}px;padding:${layout.padding}px;align-items:${alignItems};justify-content:${justifyContent};`
     : '';
-  return `${position}width:${node.width}px;height:${node.height}px;box-sizing:border-box;background:${style.fill};opacity:${style.opacity};border:${style.borderWidth}px ${style.borderStyle} ${style.borderColor};border-radius:${style.borderRadius}px;color:${style.color};font-family:${style.fontFamily};font-size:${style.fontSize}px;font-weight:${style.fontWeight};line-height:${style.lineHeight};letter-spacing:${style.letterSpacing}px;text-align:${style.textAlign};overflow:${layout?.clipContent ? 'hidden' : 'visible'};transform:rotate(${node.rotation}deg);${layoutCss}`;
+  return `${position}width:${node.width}px;height:${node.height}px;box-sizing:border-box;background:${style.fill};opacity:${style.opacity};border:${style.borderWidth}px ${style.borderStyle} ${style.borderColor};border-radius:${style.borderRadius}px;color:${style.color};font-family:${style.fontFamily};font-size:${style.fontSize}px;font-weight:${style.fontWeight};line-height:${style.lineHeight};letter-spacing:${style.letterSpacing}px;text-align:${style.textAlign};overflow:${layout?.clipContent || node.type === 'image' ? 'hidden' : 'visible'};transform:rotate(${node.rotation}deg);${layoutCss}`;
 }
 
 export function renderStaticHtml(document: DocumentModel, artboardId: string): { html: string; unsupported: string[] } {
@@ -170,7 +171,7 @@ export function renderStaticHtml(document: DocumentModel, artboardId: string): {
       const asset = getAsset(document, node.image?.assetId);
       if (!asset?.dataUrl.startsWith('data:image/')) unsupported.push(`${node.name}: unsupported or missing image asset`);
       const source = asset?.dataUrl.startsWith('data:image/') ? asset.dataUrl : '';
-      return `<img data-node-id="${escapeHtml(node.id)}" src="${escapeHtml(source)}" alt="${escapeHtml(node.image?.alt ?? node.name)}" style="${style};object-fit:contain;"/>${children}`;
+      return `<img data-node-id="${escapeHtml(node.id)}" src="${escapeHtml(source)}" alt="${escapeHtml(node.image?.alt ?? node.name)}" style="${style};object-fit:${node.image?.fit === 'cover' ? 'cover' : 'contain'};object-position:center;"/>${children}`;
     }
     if (node.type === 'ellipse' || node.type === 'line' || node.type === 'arrow' || node.type === 'polygon' || node.type === 'rectangle') {
       const shape = renderShape(node, 0, 0).replaceAll('fill-opacity="1"', 'fill-opacity="1"');

@@ -172,7 +172,9 @@ describe('Easel commands', () => {
 
     const graphicPlaced = dispatchCommand(withAsset, { type: 'place-asset', assetId: asset.id, frameId: 'artboard_graphic', position: { x: 32, y: 318 }, width: 416, height: 194, source: 'human' });
     const graphicImage = Object.values(graphicPlaced.document.nodes).find((node) => node.type === 'image' && node.parentId === 'artboard_graphic');
-    expect(graphicImage).toBeTruthy();
-    expect(graphicPlaced.document.nodes.artboard_graphic.childIds.indexOf(graphicImage?.id ?? '')).toBeGreaterThan(graphicPlaced.document.nodes.artboard_graphic.childIds.indexOf('graphic_image'));
+    expect(graphicImage?.id).toBe('graphic_image');
+    expect(graphicImage).toEqual(expect.objectContaining({ x: 32, y: 318, width: 416, height: 194, image: expect.objectContaining({ assetId: 'asset_test', role: 'content' }) }));
+    expect(graphicPlaced.document.nodes.graphic_image_hint).toBeUndefined();
+    expect(graphicPlaced.document.nodes.artboard_graphic.childIds).not.toContain('graphic_image_hint');
   });
 });
